@@ -1,12 +1,18 @@
 # Data layer configuration
 
 universe:
-  source: russell3000          # iShares IWV holdings CSV
-  ishares_iwv_url: "https://www.ishares.com/us/products/239714/ishares-russell-3000-etf/1467271812596.ajax?fileType=csv&fileName=IWV_holdings&dataType=fund"
+  # Broad US-listed common stocks from the official NASDAQ Trader symbol
+  # directory; liquidity filters trim this to the investable ~2-3k names
+  # (functionally the Russell 3000 investable core, incl. small caps).
+  # The iShares IWV holdings CSV was dropped — that endpoint now serves an
+  # HTML landing page to programmatic requests and is no longer reliable.
+  source: us_listed
+  nasdaq_listed_url: "https://www.nasdaqtrader.com/dynamic/symdir/nasdaqlisted.txt"
+  other_listed_url: "https://www.nasdaqtrader.com/dynamic/symdir/otherlisted.txt"
   liquidity_filters:
     min_price: 5.0             # USD; drop sub-$5 (penny/illiquid)
     min_dollar_volume: 1_000_000   # USD; 60-day avg daily $ volume floor
-    common_stock_only: true    # drop ADRs, ETFs, units, preferred
+    common_stock_only: true    # drop ETFs, test issues, warrants/units/preferred
 
 prices:
   start_date: "2000-01-01"
@@ -14,8 +20,15 @@ prices:
   chunk_size: 100              # tickers per yfinance batch download
 
 fundamentals:
-  # yfinance historical quarterly statements (~5y depth)
-  filing_lag_days: 90          # fiscal period-end + lag = availability date
+  # Source: SEC EDGAR XBRL companyfacts API (the upstream source of truth).
+  # Full filing history with real `filed` dates -> true point-in-time.
+  source: sec_edgar
+  cik_map_url: "https://www.sec.gov/files/company_tickers.json"
+  companyfacts_url: "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
+  submissions_url: "https://data.sec.gov/submissions/CIK{cik}.json"
+  # SEC requires a descriptive User-Agent with contact info.
+  user_agent: "factor-investment research shine.shenghao@gmail.com"
+  request_sleep: 0.12          # seconds between SEC calls (rate-limit < 10/s)
   cache_file: "fundamentals_quarterly.parquet"
   refresh: false               # true forces re-fetch of the slow path
 
