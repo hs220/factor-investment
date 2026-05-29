@@ -3,6 +3,22 @@
 ## Project Overview
 Factor analysis system for a Roth IRA — combining ETF-based (A) and individual stock (B) strategies, with ML-enhanced factor models layered on top of classical Fama-French analysis.
 
+**Strategy B (stock selection) is built** — see `plans/modeling.md`. The end-to-end
+pipeline (all logic in `src/`, schedulable via `pipelines/`, demoed in `notebooks/`):
+
+```
+pipelines/build_dataset.py  → universe + prices + EDGAR PIT fundamentals + FF/macro
+   (src/data)                 cached to data/processed/
+pipelines/train.py          → assemble panel (src/factors) → walk-forward ML
+   (src/models)               (src/models) → OOS predictions  [--shuffle leakage test]
+pipelines/backtest.py       → long-only top-N portfolio (src/portfolio) → cost-aware
+   (src/backtest)             backtest + FF5/MOM attribution
+
+Run full universe: python -m pipelines.build_dataset   (drop --quick)
+                   python -m pipelines.train --model lightgbm
+                   python -m pipelines.backtest
+```
+
 ## Working Principles
 
 ### Library-First Development
