@@ -12,29 +12,31 @@ normalization:
   sector_neutral: true         # demean/rank within sector
   winsorize_pct: 0.01          # clip tails before z-scoring
 
+# Feature list consumed by src/factors/panel.py. Names match the columns the
+# panel builder computes. Expected IC sign noted where it aids interpretation
+# (the ML model is sign-agnostic; the single-signal analysis in stage 3 uses it).
 features:
   # Price / technical (full history, monthly cadence)
   price:
-    - momentum_12_2            # cumulative return t-12..t-2 (skip last month)
-    - momentum_6_1
-    - volatility_12m           # trailing 12m return stdev
-    - size_log_mktcap          # log market cap (SMB proxy)
-    - dollar_volume_60d        # liquidity
+    - momentum_12_2            # return t-12..t-2 (skip last month); + expected
+    - momentum_6_1             # return t-6..t-1; + expected
+    - volatility_12m           # trailing 12m return stdev; - expected (low-vol)
+    - size_log_mktcap          # log market cap (SMB); - expected (size premium)
 
   # Fundamental (quarterly cadence, forward-filled, PIT)
   fundamental:
     value:
-      - earnings_yield         # 1 / PE
-      - book_to_price          # 1 / PB
-      - ev_ebitda_inv          # 1 / EV-EBITDA
+      - earnings_yield         # net_income_ttm / mktcap; + expected
+      - book_to_price          # equity / mktcap; + expected
+      - ev_ebitda_inv          # ebitda_ttm / EV; + expected
     quality:
-      - roe
-      - gross_margin
-      - profit_margin
-      - accruals               # earnings quality
+      - roe                    # + expected
+      - gross_margin           # + expected
+      - profit_margin          # + expected
+      - accruals               # - expected (low accruals = quality earnings)
     growth:
-      - revenue_growth_yoy
-      - asset_growth_yoy       # CMA-style (low is good)
+      - revenue_growth_yoy     # +/- (growth vs value tension)
+      - asset_growth_yoy       # - expected (CMA: conservative investment wins)
 
   # Macro regime (same value broadcast across all stocks at date t)
   macro:

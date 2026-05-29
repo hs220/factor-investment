@@ -44,10 +44,14 @@ def download_prices(
     return prices.dropna(axis=1, how="all")
 
 
+def to_monthly_close(daily_prices: pd.DataFrame) -> pd.DataFrame:
+    """Month-end close price levels (for market cap / valuation ratios)."""
+    return daily_prices.resample("ME").last()
+
+
 def to_monthly_returns(daily_prices: pd.DataFrame) -> pd.DataFrame:
     """Month-end resample -> simple monthly returns."""
-    monthly = daily_prices.resample("ME").last()
-    return monthly.pct_change().dropna(how="all")
+    return to_monthly_close(daily_prices).pct_change().dropna(how="all")
 
 
 def avg_dollar_volume(

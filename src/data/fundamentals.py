@@ -58,6 +58,7 @@ _STOCK_CONCEPTS: dict[str, list[str]] = {
     ],
     "debt_lt": ["LongTermDebtNoncurrent", "LongTermDebt"],
     "debt_cur": ["LongTermDebtCurrent", "DebtCurrent"],
+    "shares": ["EntityCommonStockSharesOutstanding", "CommonStockSharesOutstanding"],
 }
 
 
@@ -105,6 +106,21 @@ def _first_match(facts: dict, candidates: list[str]) -> list[dict] | None:
     return None
 
 
+def _snap_to_quarter(df: pd.DataFrame) -> pd.DataFrame:
+    """Snap a period_end-indexed frame to calendar quarter-ends.
+
+    Different XBRL concepts report slightly different fiscal period-end dates
+    (e.g. 2020-09-26 vs 2020-09-30); snapping to the calendar quarter aligns
+    all concepts onto a common grid so TTM/joins work. If two raw dates map to
+    the same quarter, keep the later one.
+    """
+    if df.empty:
+        return df
+    df = df.copy()
+    df.index = df.index.to_period("Q").to_timestamp("Q").normalize()
+    return df[~df.index.duplicated(keep="last")].sort_index()
+
+
 def _quarterly_flow(records: list[dict]) -> pd.DataFrame:
     """Clean quarterly series for a flow concept (as-first-reported).
 
@@ -148,7 +164,7 @@ def _quarterly_flow(records: list[dict]) -> pd.DataFrame:
     quarter = {**derived, **three_m}
     if not quarter:
         return pd.DataFrame(columns=["val", "filed"])
-    return (
+    df = (
         pd.DataFrame(
             [(e, v, f) for e, (v, f) in quarter.items()],
             columns=["period_end", "val", "filed"],
@@ -156,6 +172,7 @@ def _quarterly_flow(records: list[dict]) -> pd.DataFrame:
         .set_index("period_end")
         .sort_index()
     )
+    return _snap_to_quarter(df)
 
 
 def _quarterly_stock(records: list[dict]) -> pd.DataFrame:
@@ -171,7 +188,7 @@ def _quarterly_stock(records: list[dict]) -> pd.DataFrame:
             by_end[end] = (float(r["val"]), filed)
     if not by_end:
         return pd.DataFrame(columns=["val", "filed"])
-    return (
+    df = (
         pd.DataFrame(
             [(e, v, f) for e, (v, f) in by_end.items()],
             columns=["period_end", "val", "filed"],
@@ -179,6 +196,7 @@ def _quarterly_stock(records: list[dict]) -> pd.DataFrame:
         .set_index("period_end")
         .sort_index()
     )
+    return _snap_to_quarter(df)
 
 
 # Coarse SIC -> sector mapping (approximate GICS-like buckets for neutralization).
@@ -282,6 +300,7 @@ def _extract_ticker(ticker: str, cik: str, session: requests.Session) -> pd.Data
     result["assets"] = out.get("assets")
     result["debt"] = debt.replace(0, pd.NA)
     result["cash"] = out.get("cash")
+    result["shares"] = out.get("shares")
 
     # Price-independent ratios.
     result["roe"] = result["net_income_ttm"] / result["equity"].replace(0, pd.NA)

@@ -52,9 +52,9 @@ def main() -> None:
     uni = uni.loc[keep]
     print(f"      {len(keep)} tickers pass liquidity filters")
 
-    monthly_returns = prices.to_monthly_returns(close)
     cache.save(uni.reset_index(), "universe.parquet")
-    cache.save(monthly_returns, "stock_returns_monthly.parquet")
+    cache.save(prices.to_monthly_close(close), "stock_prices_monthly.parquet")
+    cache.save(prices.to_monthly_returns(close), "stock_returns_monthly.parquet")
 
     # 3. Fundamentals (slow path) --------------------------------------------
     fund_cfg = data_cfg["fundamentals"]
