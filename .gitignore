@@ -1,0 +1,22 @@
+# Data is regenerated from sources — never commit
+data/raw/
+data/processed/
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# Notebook outputs are large; keep notebooks but strip is manual
+# (comment out the next line if you want to version executed notebooks)
+# notebooks/*.ipynb
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# OMC orchestration state
+.omc/

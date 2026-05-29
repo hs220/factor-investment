@@ -1,0 +1,43 @@
+# Feature panel configuration
+
+panel:
+  frequency: "monthly"
+  target_horizon: 1            # months forward
+  target: "forward_return_rank"   # within-sector cross-sectional rank
+  sector_field: "gics_sector"  # neutralization grouping
+
+normalization:
+  method: "cross_sectional"    # rank/z-score within each date
+  scheme: "rank"               # rank | zscore
+  sector_neutral: true         # demean/rank within sector
+  winsorize_pct: 0.01          # clip tails before z-scoring
+
+features:
+  # Price / technical (full history, monthly cadence)
+  price:
+    - momentum_12_2            # cumulative return t-12..t-2 (skip last month)
+    - momentum_6_1
+    - volatility_12m           # trailing 12m return stdev
+    - size_log_mktcap          # log market cap (SMB proxy)
+    - dollar_volume_60d        # liquidity
+
+  # Fundamental (quarterly cadence, forward-filled, PIT)
+  fundamental:
+    value:
+      - earnings_yield         # 1 / PE
+      - book_to_price          # 1 / PB
+      - ev_ebitda_inv          # 1 / EV-EBITDA
+    quality:
+      - roe
+      - gross_margin
+      - profit_margin
+      - accruals               # earnings quality
+    growth:
+      - revenue_growth_yoy
+      - asset_growth_yoy       # CMA-style (low is good)
+
+  # Macro regime (same value broadcast across all stocks at date t)
+  macro:
+    - yield_curve
+    - vix
+    - hy_spread

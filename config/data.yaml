@@ -1,0 +1,31 @@
+# Data layer configuration
+
+universe:
+  source: russell3000          # iShares IWV holdings CSV
+  ishares_iwv_url: "https://www.ishares.com/us/products/239714/ishares-russell-3000-etf/1467271812596.ajax?fileType=csv&fileName=IWV_holdings&dataType=fund"
+  liquidity_filters:
+    min_price: 5.0             # USD; drop sub-$5 (penny/illiquid)
+    min_dollar_volume: 1_000_000   # USD; 60-day avg daily $ volume floor
+    common_stock_only: true    # drop ADRs, ETFs, units, preferred
+
+prices:
+  start_date: "2000-01-01"
+  frequency: "monthly"         # resample daily -> month-end
+  chunk_size: 100              # tickers per yfinance batch download
+
+fundamentals:
+  # yfinance historical quarterly statements (~5y depth)
+  filing_lag_days: 90          # fiscal period-end + lag = availability date
+  cache_file: "fundamentals_quarterly.parquet"
+  refresh: false               # true forces re-fetch of the slow path
+
+factors:
+  ff5_momentum: true           # Ken French FF5 + momentum
+  macro_series:                # FRED series ids
+    yield_curve: ["GS10", "GS2"]   # 10y - 2y
+    hy_spread: "BAMLH0A0HYM2"
+  vix_ticker: "^VIX"           # via yfinance
+
+cache:
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
