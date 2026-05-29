@@ -5,6 +5,7 @@ rather than hard-coding parameters, so behavior is tunable without code edits.
 """
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -14,8 +15,13 @@ import yaml
 # Project root = parent of src/
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = PROJECT_ROOT / "config"
-DATA_RAW = PROJECT_ROOT / "data" / "raw"
-DATA_PROCESSED = PROJECT_ROOT / "data" / "processed"
+
+# Data root is configurable so storage can live on a NAS/network mount without
+# code changes: `export FACTOR_DATA_ROOT=/mnt/nas/factor-data`. Defaults to the
+# local ./data directory.
+DATA_ROOT = Path(os.environ.get("FACTOR_DATA_ROOT", PROJECT_ROOT / "data"))
+DATA_RAW = DATA_ROOT / "raw"
+DATA_PROCESSED = DATA_ROOT / "processed"
 
 
 @lru_cache(maxsize=None)

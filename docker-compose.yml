@@ -1,0 +1,33 @@
+# Synology Container Manager / QNAP Container Station project.
+#
+# Edit the host path below to your NAS shared folder, then run the jobs.
+# All three services share the same image and the same /data volume; they just
+# run different pipeline entry points.
+#
+#   docker compose run --rm build-dataset    # full data build (slow, monthly)
+#   docker compose run --rm train            # walk-forward training
+#   docker compose run --rm backtest         # backtest + attribution
+#
+# On Synology: create the project in Container Manager pointing at this file.
+
+x-common: &common
+  build: .
+  environment:
+    - FACTOR_DATA_ROOT=/data
+  volumes:
+    # CHANGE THIS host path to your NAS shared folder for factor data:
+    - /volume1/factor-data:/data
+  restart: "no"
+
+services:
+  build-dataset:
+    <<: *common
+    command: ["pipelines.build_dataset"]
+
+  train:
+    <<: *common
+    command: ["pipelines.train", "--model", "lightgbm"]
+
+  backtest:
+    <<: *common
+    command: ["pipelines.backtest"]

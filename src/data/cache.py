@@ -5,6 +5,7 @@ artifact lands in ``data/processed/`` (or ``data/raw/``) consistently.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -18,10 +19,16 @@ def _resolve(name: str, raw: bool) -> Path:
 
 
 def save(df: pd.DataFrame, name: str, *, raw: bool = False) -> Path:
-    """Write a DataFrame to ``data/{raw|processed}/<name>`` as parquet."""
+    """Write a DataFrame to ``data/{raw|processed}/<name>`` as parquet.
+
+    Writes to a temp file then atomically renames, so a crashed or interrupted
+    job (common over a network/NAS mount) never leaves a half-written parquet.
+    """
     ensure_dirs()
     path = _resolve(name, raw)
-    df.to_parquet(path)
+    tmp = path.with_name(path.name + ".tmp")
+    df.to_parquet(tmp)
+    os.replace(tmp, path)  # atomic within the same filesystem/export
     return path
 
 
