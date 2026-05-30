@@ -20,3 +20,8 @@ venv/
 
 # OMC orchestration state
 .omc/
+
+# Secrets
+.env
+deploy/timescale/.env
+config/db.local.yaml

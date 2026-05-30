@@ -1,0 +1,29 @@
+# TimescaleDB (Postgres) warehouse — the silver source of truth.
+# Runs as a persistent service on the NAS. The pipeline image and the laptop
+# both connect over the LAN at <nas-ip>:5432.
+#
+#   POSTGRES_PASSWORD comes from deploy/timescale/.env (gitignored).
+#   Schema auto-applies on first init from schema.sql.
+#
+# Bring up on the NAS:  ./deploy/deploy_timescale.sh
+
+services:
+  timescaledb:
+    image: timescale/timescaledb:2.17.2-pg16
+    container_name: factor-timescale
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-factor}
+      POSTGRES_USER: ${POSTGRES_USER:-factor}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/timescale/.env}
+    ports:
+      # Exposed on the LAN for laptop access. Restrict at the router/firewall if needed.
+      - "5432:5432"
+    volumes:
+      - ${PGDATA_DIR:-/volume1/factor-data/pgdata}:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-factor} -d ${POSTGRES_DB:-factor}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

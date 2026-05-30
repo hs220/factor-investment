@@ -1,0 +1,8 @@
+# Postgres/Timescale connection (non-secret defaults).
+# Overridable via env: FACTOR_DB_HOST, FACTOR_DB_PORT, FACTOR_DB_NAME,
+# FACTOR_DB_USER. Password comes ONLY from env POSTGRES_PASSWORD (never here).
+postgres:
+  host: "192.168.68.70"   # NAS on the LAN
+  port: 5432
+  database: "factor"
+  user: "factor"
