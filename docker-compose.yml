@@ -15,8 +15,8 @@ x-common: &common
   environment:
     - FACTOR_DATA_ROOT=/data
   volumes:
-    # CHANGE THIS host path to your NAS shared folder for factor data:
-    - /volume1/factor-data:/data
+    # Host path to your NAS shared folder; override with FACTOR_HOST_DATA.
+    - ${FACTOR_HOST_DATA:-/volume1/factor-data}:/data
   restart: "no"
 
 services:
