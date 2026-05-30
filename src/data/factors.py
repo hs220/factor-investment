@@ -9,6 +9,7 @@ frequency aligned to month-end.
 from __future__ import annotations
 
 import io
+import time
 import zipfile
 
 import pandas as pd
@@ -21,10 +22,31 @@ FF_BASE = "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp"
 FRED_BASE = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 
 
+def _get_with_retry(url: str, *, timeout: int = 30, retries: int = 4,
+                    backoff: float = 3.0) -> requests.Response:
+    """GET with retry on transient failures (5xx / timeout / connection).
+
+    External sources (FRED, Ken French) intermittently return 502/504 or time
+    out; retrying with backoff absorbs those without failing the whole asset.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(retries):
+        try:
+            resp = requests.get(url, timeout=timeout)
+            if resp.status_code < 500:
+                resp.raise_for_status()
+                return resp
+            last_exc = requests.HTTPError(f"{resp.status_code} for {url}")
+        except (requests.Timeout, requests.ConnectionError, requests.HTTPError) as exc:
+            last_exc = exc
+        if attempt < retries - 1:
+            time.sleep(backoff * (2 ** attempt))
+    raise last_exc  # type: ignore[misc]
+
+
 def _fetch_ff_csv(filename: str, skiprows: int) -> pd.DataFrame:
     """Download a Ken French CSV-zip and return the monthly data block."""
-    resp = requests.get(f"{FF_BASE}/{filename}", timeout=30)
-    resp.raise_for_status()
+    resp = _get_with_retry(f"{FF_BASE}/{filename}")
     with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
         raw = z.read(z.namelist()[0]).decode("utf-8", errors="replace")
 
@@ -66,8 +88,7 @@ def load_factors(start: str, end: str) -> pd.DataFrame:
 
 def _fetch_fred(series_id: str, start: str) -> pd.Series:
     """Fetch a single FRED series as a date-indexed Series."""
-    resp = requests.get(f"{FRED_BASE}?id={series_id}", timeout=30)
-    resp.raise_for_status()
+    resp = _get_with_retry(f"{FRED_BASE}?id={series_id}")
     df = pd.read_csv(
         io.StringIO(resp.text),
         parse_dates=["observation_date"],

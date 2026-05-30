@@ -8,10 +8,13 @@ the last stored month; fundamentals re-pull only tickers with a new filing).
 from __future__ import annotations
 
 import pandas as pd
-from dagster import asset
+from dagster import Backoff, RetryPolicy, asset
 
 from src.config import load_config
 from src.data import db, factors, fundamentals, prices, universe
+
+# Transient external sources (FRED/yfinance/EDGAR) self-heal via step retry.
+_RETRY = RetryPolicy(max_retries=3, delay=30, backoff=Backoff.EXPONENTIAL)
 
 
 def _date_range() -> tuple[str, str]:
@@ -20,7 +23,7 @@ def _date_range() -> tuple[str, str]:
     return start, end
 
 
-@asset(group_name="ingest", compute_kind="edgar")
+@asset(group_name="ingest", compute_kind="edgar", retry_policy=_RETRY)
 def universe_table(context) -> None:
     """Current US-listed common stocks (names + exchange) -> universe table."""
     uni = universe.fetch_us_listed().reset_index()
@@ -28,7 +31,7 @@ def universe_table(context) -> None:
     context.add_output_metadata({"rows": n})
 
 
-@asset(group_name="ingest", deps=[universe_table], compute_kind="yfinance")
+@asset(group_name="ingest", deps=[universe_table], compute_kind="yfinance", retry_policy=_RETRY)
 def prices_table(context) -> None:
     """Incremental monthly prices + liquidity filter -> prices/universe tables."""
     start, end = _date_range()
@@ -51,7 +54,7 @@ def prices_table(context) -> None:
     context.add_output_metadata({"tickers": len(keep), "rows": n})
 
 
-@asset(group_name="ingest", deps=[universe_table], compute_kind="edgar")
+@asset(group_name="ingest", deps=[universe_table], compute_kind="edgar", retry_policy=_RETRY)
 def fundamental_facts(context) -> None:
     """EDGAR raw facts (restatement history), incremental on new filings."""
     tickers = db.read_sql("SELECT ticker FROM universe ORDER BY ticker")["ticker"].tolist()
@@ -70,7 +73,7 @@ def fundamental_facts(context) -> None:
     context.add_output_metadata({"rows": n, "tickers": int(facts["ticker"].nunique()) if n else 0})
 
 
-@asset(group_name="ingest", deps=[universe_table], compute_kind="edgar")
+@asset(group_name="ingest", deps=[universe_table], compute_kind="edgar", retry_policy=_RETRY)
 def sectors(context) -> None:
     """GICS sector (from SEC SIC) -> universe.gics_sector."""
     tickers = db.read_sql("SELECT ticker FROM universe ORDER BY ticker")["ticker"].tolist()
@@ -80,7 +83,7 @@ def sectors(context) -> None:
     context.add_output_metadata({"updated": n})
 
 
-@asset(group_name="ingest", compute_kind="ken_french")
+@asset(group_name="ingest", compute_kind="ken_french", retry_policy=_RETRY)
 def ff_factors(context) -> None:
     """Fama-French 5 + momentum (monthly) -> ff_factors table."""
     start, end = _date_range()
@@ -88,7 +91,7 @@ def ff_factors(context) -> None:
     context.add_output_metadata({"rows": n})
 
 
-@asset(group_name="ingest", compute_kind="fred")
+@asset(group_name="ingest", compute_kind="fred", retry_policy=_RETRY)
 def macro(context) -> None:
     """Macro regime series (yield curve, VIX, HY spread) -> macro table."""
     start, end = _date_range()
