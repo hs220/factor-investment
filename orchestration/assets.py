@@ -56,9 +56,15 @@ def prices_table(context) -> None:
     context.add_output_metadata({"tickers": len(keep), "rows": n})
 
 
-@asset(group_name="ingest", deps=[prices_table], compute_kind="edgar", retry_policy=_RETRY)
+@asset(group_name="ingest", deps=[universe_table], compute_kind="edgar", retry_policy=_RETRY)
 def fundamental_facts(context) -> None:
-    """EDGAR raw facts (restatement history), incremental on new filings."""
+    """EDGAR raw facts (restatement history), incremental on new filings.
+
+    Scopes to the investable set via is_active (persisted by the prior prices
+    run) — no hard dependency on prices_table, so in the daily job the two run
+    in parallel. A name that newly crosses the liquidity threshold simply gets
+    its fundamentals on the next run.
+    """
     tickers = db.read_sql(
         "SELECT ticker FROM universe WHERE is_active ORDER BY ticker"
     )["ticker"].tolist()
