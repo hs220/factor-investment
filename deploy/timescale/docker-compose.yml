@@ -17,8 +17,9 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-factor}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/timescale/.env}
     ports:
+      # Host 5433 (5432 is taken by another Postgres on the NAS) -> container 5432.
       # Exposed on the LAN for laptop access. Restrict at the router/firewall if needed.
-      - "5432:5432"
+      - "${DB_HOST_PORT:-5433}:5432"
     volumes:
       - ${PGDATA_DIR:-/volume1/factor-data/pgdata}:/var/lib/postgresql/data
       - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro

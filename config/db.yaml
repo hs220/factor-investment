@@ -3,6 +3,6 @@
 # FACTOR_DB_USER. Password comes ONLY from env POSTGRES_PASSWORD (never here).
 postgres:
   host: "192.168.68.70"   # NAS on the LAN
-  port: 5432
+  port: 5433              # host 5433 -> container 5432 (5432 taken by another DB)
   database: "factor"
   user: "factor"
