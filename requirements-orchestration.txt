@@ -7,6 +7,8 @@ pyarrow>=14.0
 sqlalchemy>=2.0
 psycopg2-binary>=2.9
 pyyaml>=6.0
+# dagster-postgres uses the "libraries" version scheme (core - 0.84):
+# dagster 1.13.x <-> dagster-postgres 0.29.x
 dagster>=1.13,<1.14
 dagster-webserver>=1.13,<1.14
-dagster-postgres>=0.24,<0.25
+dagster-postgres>=0.29,<0.30
