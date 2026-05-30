@@ -1,0 +1,10 @@
+# Data-pipeline dependencies only — used by the NAS container that runs
+# build_dataset (fetch prices/fundamentals/factors and write parquet).
+# Heavy ML/optimization deps (sklearn, lightgbm, xgboost, cvxpy, jupyter)
+# live in requirements.txt and run on the workstation, not the NAS.
+pandas>=2.0
+numpy>=1.24
+yfinance>=0.2.40
+requests>=2.31
+pyarrow>=14.0
+pyyaml>=6.0
