@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS universe (
     ticker       text PRIMARY KEY,
     name         text,
     exchange     text,
+    sic          text,          -- raw SEC SIC code (re-map sectors without re-fetch)
     gics_sector  text,
     first_seen   date,
     last_seen    date,

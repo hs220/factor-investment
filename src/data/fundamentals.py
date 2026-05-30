@@ -318,6 +318,71 @@ def fetch_fundamentals(
 # --------------------------------------------------------------------------- #
 # Sector (SIC) — belongs to the universe table, fetched alongside facts.
 # --------------------------------------------------------------------------- #
+# Ordered SIC -> GICS-like sector ranges (first match wins). Specific 4-digit
+# refinements first, then 2-digit major-group fallbacks covering 0100-9999 so
+# any valid SIC maps to a sector (approximate: SIC != GICS, but ~complete).
+_SIC_RANGES: list[tuple[int, int, str]] = [
+    # --- specific refinements ---
+    (1311, 1389, "Energy"),            # oil & gas extraction/services
+    (1200, 1299, "Energy"),            # coal
+    (2911, 2999, "Energy"),            # petroleum refining
+    (4610, 4619, "Energy"),            # pipelines
+    (2833, 2836, "Health Care"),       # pharma / biological products
+    (3840, 3851, "Health Care"),       # medical/surgical/ophthalmic instruments
+    (8000, 8099, "Health Care"),       # health services
+    (8731, 8731, "Health Care"),       # commercial biological research (biotech)
+    (3570, 3579, "Information Technology"),  # computer & office equipment
+    (3670, 3679, "Information Technology"),  # semiconductors & electronic components
+    (3661, 3669, "Information Technology"),  # communications equipment
+    (7370, 7379, "Information Technology"),  # software & data services
+    (3820, 3829, "Information Technology"),  # measuring/controlling instruments
+    (7310, 7319, "Communication Services"),  # advertising
+    (4800, 4899, "Communication Services"),  # communications (telecom/broadcast/cable)
+    (2700, 2799, "Communication Services"),  # publishing/printing
+    (7800, 7841, "Communication Services"),  # motion pictures
+    (3711, 3716, "Consumer Discretionary"),  # motor vehicles
+    (3630, 3639, "Consumer Discretionary"),  # household appliances
+    (5400, 5499, "Consumer Staples"),        # food stores
+    (5912, 5912, "Consumer Staples"),        # drug stores
+    (2000, 2199, "Consumer Staples"),        # food & tobacco
+    (2080, 2085, "Consumer Staples"),        # beverages
+    (100,  299,  "Consumer Staples"),        # agricultural production
+    (6798, 6798, "Real Estate"),             # REITs
+    (6500, 6599, "Real Estate"),             # real estate
+    # --- 2-digit major-group fallbacks (cover everything) ---
+    (300,  999,  "Materials"),         # ag services / forestry / fishing
+    (1000, 1099, "Materials"),         # metal mining
+    (1400, 1499, "Materials"),         # nonmetallic mining
+    (1500, 1799, "Industrials"),       # construction
+    (2200, 2399, "Consumer Discretionary"),  # textiles & apparel
+    (2400, 2499, "Materials"),         # lumber & wood
+    (2500, 2599, "Consumer Discretionary"),  # furniture
+    (2600, 2699, "Materials"),         # paper
+    (2800, 2899, "Materials"),         # chemicals (non-pharma)
+    (3000, 3399, "Materials"),         # rubber/plastics/leather/stone/metals
+    (3400, 3499, "Industrials"),       # fabricated metal
+    (3500, 3599, "Industrials"),       # industrial machinery (non-computer)
+    (3600, 3699, "Industrials"),       # electrical equipment (non-IT)
+    (3700, 3799, "Industrials"),       # transportation equipment (aerospace etc.)
+    (3800, 3899, "Industrials"),       # instruments (non-medical/non-IT)
+    (3900, 3999, "Consumer Discretionary"),  # misc manufacturing
+    (4000, 4799, "Industrials"),       # transportation
+    (4900, 4999, "Utilities"),         # electric/gas/sanitary
+    (5000, 5199, "Industrials"),       # wholesale trade
+    (5200, 5999, "Consumer Discretionary"),  # retail trade
+    (6000, 6499, "Financials"),        # finance & insurance
+    (6600, 6799, "Financials"),        # holding/investment offices
+    (7000, 7099, "Consumer Discretionary"),  # hotels & lodging
+    (7100, 7399, "Industrials"),       # business services (non-IT/non-advertising)
+    (7400, 7799, "Industrials"),       # other business/repair services
+    (7900, 7999, "Consumer Discretionary"),  # amusement & recreation
+    (8100, 8199, "Industrials"),       # legal services
+    (8200, 8399, "Consumer Discretionary"),  # education & social services
+    (8400, 8999, "Industrials"),       # other services
+    (9000, 9999, "Industrials"),       # public administration (rare)
+]
+
+
 def _sic_to_sector(sic: int | str | None) -> str | None:
     if sic is None or sic == "":
         return None
@@ -325,26 +390,9 @@ def _sic_to_sector(sic: int | str | None) -> str | None:
         s = int(sic)
     except (ValueError, TypeError):
         return None
-    if 6000 <= s <= 6799:
-        return "Real Estate" if 6500 <= s <= 6799 else "Financials"
-    if 2833 <= s <= 2836 or 8000 <= s <= 8099 or 3840 <= s <= 3851:
-        return "Health Care"
-    if 3570 <= s <= 3577 or 3670 <= s <= 3679 or 7370 <= s <= 7379 or s == 3674:
-        return "Information Technology"
-    if 4800 <= s <= 4899 or 2700 <= s <= 2799 or 7800 <= s <= 7841:
-        return "Communication Services"
-    if 4900 <= s <= 4999:
-        return "Utilities"
-    if 1300 <= s <= 1399 or 2900 <= s <= 2999 or s == 1311:
-        return "Energy"
-    if 2800 <= s <= 2899 or 1000 <= s <= 1499 or 2600 <= s <= 2699 or 3300 <= s <= 3399:
-        return "Materials"
-    if 2000 <= s <= 2199 or 5400 <= s <= 5499 or 2080 <= s <= 2090:
-        return "Consumer Staples"
-    if 5200 <= s <= 5999 or 2300 <= s <= 2399 or 3700 <= s <= 3799 or 5700 <= s <= 5736:
-        return "Consumer Discretionary"
-    if 1500 <= s <= 1799 or 3400 <= s <= 3569 or 3580 <= s <= 3669 or 4000 <= s <= 4799:
-        return "Industrials"
+    for lo, hi, sector in _SIC_RANGES:
+        if lo <= s <= hi:
+            return sector
     return None
 
 
@@ -363,9 +411,11 @@ def fetch_sectors(tickers: list[str], *, verbose: bool = False) -> pd.DataFrame:
             continue
         sub = _fetch_submissions(cik, session)
         time.sleep(sleep)
+        sic = sub.get("sic") if sub else None
         rows.append({
             "ticker": t,
-            "gics_sector": _sic_to_sector(sub.get("sic")) if sub else None,
+            "sic": str(sic) if sic not in (None, "") else None,
+            "gics_sector": _sic_to_sector(sic),
             "industry": sub.get("sicDescription") if sub else None,
         })
     return pd.DataFrame(rows)

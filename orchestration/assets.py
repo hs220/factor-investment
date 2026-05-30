@@ -95,9 +95,11 @@ def sectors(context) -> None:
         "SELECT ticker FROM universe WHERE is_active ORDER BY ticker"
     )["ticker"].tolist()
     sec = fundamentals.fetch_sectors(tickers)
-    sec = sec.dropna(subset=["gics_sector"])
-    n = db.upsert(sec[["ticker", "gics_sector"]], "universe", ["ticker"]) if not sec.empty else 0
-    context.add_output_metadata({"updated": n})
+    # Store raw sic too, so future mapping changes are an instant re-map
+    # (scripts/remap_sectors.py) with no EDGAR re-fetch.
+    n = db.upsert(sec[["ticker", "sic", "gics_sector"]], "universe", ["ticker"]) if not sec.empty else 0
+    mapped = int(sec["gics_sector"].notna().sum())
+    context.add_output_metadata({"updated": n, "with_sector": mapped})
 
 
 @asset(group_name="ingest", compute_kind="ken_french", retry_policy=_RETRY)
