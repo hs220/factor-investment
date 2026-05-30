@@ -12,3 +12,4 @@ pyyaml>=6.0
 dagster>=1.13,<1.14
 dagster-webserver>=1.13,<1.14
 dagster-postgres>=0.29,<0.30
+pandera>=0.20

@@ -21,6 +21,7 @@ from dagster import (
 )
 
 from orchestration import assets
+from orchestration.checks import ALL_CHECKS
 
 _ALL = [
     assets.universe_table,
@@ -41,6 +42,7 @@ monthly_job = define_asset_job(
 _TZ = "America/New_York"
 defs = Definitions(
     assets=_ALL,
+    asset_checks=ALL_CHECKS,
     jobs=[daily_job, monthly_job],
     schedules=[
         ScheduleDefinition(

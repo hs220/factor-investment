@@ -21,3 +21,4 @@ matplotlib>=3.7
 seaborn>=0.12
 jupyterlab>=4.0
 ipywidgets>=8.0
+pandera>=0.20
