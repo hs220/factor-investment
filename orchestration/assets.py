@@ -51,13 +51,17 @@ def prices_table(context) -> None:
 
     monthly_close = prices.to_monthly_close(close[keep])
     n = db.load_prices_wide(monthly_close)
+    # Record the investable set (liquidity filter) -> universe.is_active.
+    db.set_active(keep)
     context.add_output_metadata({"tickers": len(keep), "rows": n})
 
 
-@asset(group_name="ingest", deps=[universe_table], compute_kind="edgar", retry_policy=_RETRY)
+@asset(group_name="ingest", deps=[prices_table], compute_kind="edgar", retry_policy=_RETRY)
 def fundamental_facts(context) -> None:
     """EDGAR raw facts (restatement history), incremental on new filings."""
-    tickers = db.read_sql("SELECT ticker FROM universe ORDER BY ticker")["ticker"].tolist()
+    tickers = db.read_sql(
+        "SELECT ticker FROM universe WHERE is_active ORDER BY ticker"
+    )["ticker"].tolist()
 
     existing = db.read_sql(
         "SELECT ticker, MAX(filed_date) AS f FROM fundamental_facts GROUP BY ticker"
@@ -73,10 +77,12 @@ def fundamental_facts(context) -> None:
     context.add_output_metadata({"rows": n, "tickers": int(facts["ticker"].nunique()) if n else 0})
 
 
-@asset(group_name="ingest", deps=[universe_table], compute_kind="edgar", retry_policy=_RETRY)
+@asset(group_name="ingest", deps=[prices_table], compute_kind="edgar", retry_policy=_RETRY)
 def sectors(context) -> None:
     """GICS sector (from SEC SIC) -> universe.gics_sector."""
-    tickers = db.read_sql("SELECT ticker FROM universe ORDER BY ticker")["ticker"].tolist()
+    tickers = db.read_sql(
+        "SELECT ticker FROM universe WHERE is_active ORDER BY ticker"
+    )["ticker"].tolist()
     sec = fundamentals.fetch_sectors(tickers)
     sec = sec.dropna(subset=["gics_sector"])
     n = db.upsert(sec[["ticker", "gics_sector"]], "universe", ["ticker"]) if not sec.empty else 0

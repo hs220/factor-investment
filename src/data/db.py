@@ -163,3 +163,23 @@ def load_fundamental_facts(facts: pd.DataFrame) -> int:
         df[c] = pd.to_datetime(df[c]).dt.date
     return upsert(df, "fundamental_facts",
                   ["ticker", "concept", "period_end", "filed_date"])
+
+
+def set_active(active_tickers: list[str]) -> int:
+    """Mark the investable (liquidity-passing) set: is_active=true for the given
+    tickers, false for all others. universe_table loads all listed names; this
+    is how the liquidity filter is recorded so downstream reads WHERE is_active."""
+    active = list(active_tickers)
+    raw = get_engine().raw_connection()
+    try:
+        with raw.cursor() as cur:
+            cur.execute("UPDATE universe SET is_active = FALSE")
+            if active:
+                cur.execute(
+                    "UPDATE universe SET is_active = TRUE WHERE ticker = ANY(%s)",
+                    (active,),
+                )
+        raw.commit()
+    finally:
+        raw.close()
+    return len(active)
