@@ -65,6 +65,49 @@ python -m pipelines.train --model lightgbm
 jupyter lab    # notebooks read processed parquet over the mount
 ```
 
+### Retrieving data: parquet + DuckDB (no DB server)
+
+The container is a *producer* — it writes parquet; it does **not** host a
+database. To query from the laptop, read the parquet in place with DuckDB
+(`src/data/query.py`). DuckDB pushes filters down to the parquet so it only
+reads the columns/row-groups you ask for — fast even over NFS, nothing to run:
+
+```python
+from src.data import query
+query.load_panel(start="2024-01-01")                       # filtered panel
+query.sql("SELECT date, ticker, pred FROM {predictions} "
+          "WHERE date >= '2024-01-01' ORDER BY pred DESC")  # ad-hoc SQL
+```
+
+A Postgres/MySQL container would be the wrong shape here: the data is
+columnar/analytical and written once per batch, so an embedded engine over
+parquet beats ETL-ing into a row store. Revisit only if many machines must query
+concurrently without mounting.
+
+## 6. Backfill vs. incremental (scheduling)
+
+Differentiate the two run modes — they have very different cost:
+
+| | Backfill | Incremental (`--incremental`) |
+|---|---|---|
+| When | once / rare full rebuild | scheduled weekly or monthly |
+| Prices | all history, all names | only months since the last cached month-end |
+| Fundamentals | full EDGAR companyfacts pull | checks each company's latest filing date first; **skips** the heavy pull when nothing changed |
+| Cost | ~45-90 min, high query volume | minutes, tiny query volume |
+
+```bash
+# One-time (or rare) backfill — run on the NAS, off-hours:
+docker compose run --rm build-dataset
+
+# Scheduled update — cheap; add --incremental in Task Scheduler:
+docker compose run --rm build-dataset python -m pipelines.build_dataset --incremental
+```
+
+Schedule the incremental run after month-end (fundamentals post on filing
+cadence; prices settle daily). The incremental price fetch re-pulls only a
+small trailing window and merges it into the cached monthly series (atomic
+write), and fundamentals re-pull only tickers with a new SEC filing.
+
 ## Notes & tradeoffs
 
 - **CPU**: EDGAR fetch is network-bound (fine on NAS); pandas parsing is CPU-ish

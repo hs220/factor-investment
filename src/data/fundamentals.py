@@ -241,7 +241,24 @@ def _sic_to_sector(sic: int | None) -> str | None:
     return None
 
 
-def _extract_ticker(ticker: str, cik: str, session: requests.Session) -> pd.DataFrame:
+def _fetch_submissions(cik: str, session: requests.Session) -> dict:
+    """SEC submissions JSON (light): has SIC and the recent-filings list."""
+    cfg = load_config("data")["fundamentals"]
+    try:
+        return session.get(cfg["submissions_url"].format(cik=cik), timeout=30).json()
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def latest_filing_date(sub_json: dict) -> pd.Timestamp | None:
+    """Most recent filing date from a submissions JSON, if any."""
+    dates = sub_json.get("filings", {}).get("recent", {}).get("filingDate", [])
+    return max((pd.Timestamp(d) for d in dates), default=None) if dates else None
+
+
+def _extract_ticker(
+    ticker: str, cik: str, session: requests.Session, sub_json: dict | None = None
+) -> pd.DataFrame:
     cfg = load_config("data")["fundamentals"]
     facts_url = cfg["companyfacts_url"].format(cik=cik)
     resp = session.get(facts_url, timeout=30)
@@ -315,26 +332,35 @@ def _extract_ticker(ticker: str, cik: str, session: requests.Session) -> pd.Data
     result["availability_date"] = filed_dates.values
     result["ticker"] = ticker
 
-    # Sector from SIC (one extra lightweight call).
-    try:
-        sub = session.get(cfg["submissions_url"].format(cik=cik), timeout=30).json()
-        result["gics_sector"] = _sic_to_sector(sub.get("sic"))
-        result["industry"] = sub.get("sicDescription")
-    except Exception:  # noqa: BLE001
-        result["gics_sector"] = None
-        result["industry"] = None
+    # Sector from SIC (reuse submissions JSON if already fetched).
+    if sub_json is None:
+        sub_json = _fetch_submissions(cik, session)
+    result["gics_sector"] = _sic_to_sector(sub_json.get("sic")) if sub_json else None
+    result["industry"] = sub_json.get("sicDescription") if sub_json else None
 
     return result.reset_index()
 
 
-def fetch_fundamentals(tickers: list[str], *, verbose: bool = True) -> pd.DataFrame:
-    """Fetch EDGAR quarterly fundamentals for many tickers (resilient)."""
+def fetch_fundamentals(
+    tickers: list[str],
+    *,
+    existing_latest: dict[str, pd.Timestamp] | None = None,
+    verbose: bool = True,
+) -> pd.DataFrame:
+    """Fetch EDGAR quarterly fundamentals for many tickers (resilient).
+
+    When ``existing_latest`` (ticker -> max availability_date already cached) is
+    given, the per-company submissions endpoint is checked first and the heavy
+    companyfacts pull is **skipped** for any ticker with no new filing since the
+    cached data — the incremental fast path. Returns rows only for tickers that
+    were (re)fetched; callers merge these into the existing cache.
+    """
     cfg = load_config("data")["fundamentals"]
     sleep = cfg.get("request_sleep", 0.12)
     session = _session()
     cik_map = get_cik_map(session)
 
-    frames, no_cik, failed = [], [], []
+    frames, no_cik, failed, skipped = [], [], [], 0
     for i, t in enumerate(tickers):
         if verbose and i % 100 == 0:
             print(f"  EDGAR {i}/{len(tickers)}...", flush=True)
@@ -343,15 +369,26 @@ def fetch_fundamentals(tickers: list[str], *, verbose: bool = True) -> pd.DataFr
             no_cik.append(t)
             continue
         try:
-            df = _extract_ticker(t, cik, session)
+            sub = _fetch_submissions(cik, session)
+            time.sleep(sleep)
+            # Incremental skip: no new filing since what we already have.
+            if existing_latest is not None and t in existing_latest:
+                latest = latest_filing_date(sub)
+                if latest is not None and latest <= existing_latest[t]:
+                    skipped += 1
+                    continue
+            df = _extract_ticker(t, cik, session, sub_json=sub)
             if not df.empty:
                 frames.append(df)
             else:
                 failed.append(t)
-            time.sleep(sleep)  # be polite to SEC
+            time.sleep(sleep)
         except Exception:  # noqa: BLE001
             failed.append(t)
 
     if verbose:
-        print(f"  done: {len(frames)} ok, {len(no_cik)} no-CIK, {len(failed)} failed")
+        msg = f"  done: {len(frames)} fetched, {len(no_cik)} no-CIK, {len(failed)} failed"
+        if existing_latest is not None:
+            msg += f", {skipped} unchanged-skipped"
+        print(msg)
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()

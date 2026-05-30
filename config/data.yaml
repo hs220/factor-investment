@@ -17,7 +17,10 @@ universe:
 prices:
   start_date: "2000-01-01"
   frequency: "monthly"         # resample daily -> month-end
-  chunk_size: 100              # tickers per yfinance batch download
+  chunk_size: 50               # tickers per yfinance batch download
+  chunk_sleep: 1.0             # seconds between chunks (avoid rate limits)
+  max_retries: 3               # retry rounds for failed tickers
+  backoff_base: 5.0            # seconds; exponential backoff between retry rounds
 
 fundamentals:
   # Source: SEC EDGAR XBRL companyfacts API (the upstream source of truth).
