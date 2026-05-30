@@ -54,6 +54,14 @@ remote "
   fi
 "
 
+echo "==> Ensure pgdata directory exists (bind mount target)..."
+remote "
+  cd '$COMPOSE_DIR'
+  pgdir=\$(grep -E '^PGDATA_DIR=' .env | cut -d= -f2)
+  pgdir=\${pgdir:-/volume1/factor-data/pgdata}
+  mkdir -p \"\$pgdir\" && echo \"ok: \$pgdir\"
+"
+
 echo "==> Start TimescaleDB..."
 remote "cd '$COMPOSE_DIR' && $DOCKER compose up -d"
 
