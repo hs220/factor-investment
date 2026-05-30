@@ -77,9 +77,14 @@ def fundamental_facts(context) -> None:
     context.add_output_metadata({"rows": n, "tickers": int(facts["ticker"].nunique()) if n else 0})
 
 
-@asset(group_name="ingest", deps=[prices_table], compute_kind="edgar", retry_policy=_RETRY)
+@asset(group_name="ingest", deps=[universe_table], compute_kind="edgar", retry_policy=_RETRY)
 def sectors(context) -> None:
-    """GICS sector (from SEC SIC) -> universe.gics_sector."""
+    """GICS sector (from SEC SIC) -> universe.gics_sector.
+
+    Independent of prices: SIC classification has nothing to do with liquidity.
+    Scopes to the last-known investable set via is_active (persisted by the
+    prior prices run), so it needs no hard dependency on prices_table.
+    """
     tickers = db.read_sql(
         "SELECT ticker FROM universe WHERE is_active ORDER BY ticker"
     )["ticker"].tolist()
