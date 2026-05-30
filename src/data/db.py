@@ -55,38 +55,41 @@ def read_sql(query: str, **params) -> pd.DataFrame:
         return pd.read_sql_query(text(query), conn, params=params or None)
 
 
-def upsert(df: pd.DataFrame, table: str, conflict: list[str], *, chunksize: int = 5000) -> int:
+def upsert(df: pd.DataFrame, table: str, conflict: list[str], *, chunksize: int = 10000) -> int:
     """Insert rows, updating non-key columns on conflict (Postgres ON CONFLICT).
 
+    Uses psycopg2 ``execute_values`` (one multi-row INSERT per chunk) — far
+    faster than row-by-row executemany for the large price/fundamental loads.
     ``conflict`` are the primary-key columns. Returns the number of rows sent.
     """
     if df.empty:
         return 0
-    from sqlalchemy import text
+    from psycopg2.extras import execute_values
 
     cols = list(df.columns)
     updates = [c for c in cols if c not in conflict]
     collist = ", ".join(f'"{c}"' for c in cols)
-    placeholders = ", ".join(f":{c}" for c in cols)
     conflict_cols = ", ".join(f'"{c}"' for c in conflict)
-    set_clause = (
-        ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in updates)
-        if updates
-        else None
-    )
-    action = f"DO UPDATE SET {set_clause}" if set_clause else "DO NOTHING"
-    stmt = text(
-        f'INSERT INTO {table} ({collist}) VALUES ({placeholders}) '
+    set_clause = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in updates)
+    action = f"DO UPDATE SET {set_clause}" if updates else "DO NOTHING"
+    sql = (
+        f"INSERT INTO {table} ({collist}) VALUES %s "
         f"ON CONFLICT ({conflict_cols}) {action}"
     )
 
-    records = df.where(pd.notnull(df), None).to_dict("records")
-    sent = 0
-    with get_engine().begin() as conn:
-        for i in range(0, len(records), chunksize):
-            conn.execute(stmt, records[i : i + chunksize])
-            sent += len(records[i : i + chunksize])
-    return sent
+    # NaN/NaT -> None for SQL NULL; rows as plain tuples.
+    clean = df.where(pd.notnull(df), None)
+    records = list(clean.itertuples(index=False, name=None))
+
+    raw = get_engine().raw_connection()
+    try:
+        with raw.cursor() as cur:
+            for i in range(0, len(records), chunksize):
+                execute_values(cur, sql, records[i : i + chunksize], page_size=1000)
+        raw.commit()
+    finally:
+        raw.close()
+    return len(records)
 
 
 def ping() -> bool:
@@ -99,3 +102,64 @@ def ping() -> bool:
         return True
     except Exception:  # noqa: BLE001
         return False
+
+
+# --------------------------------------------------------------------------- #
+# Table-specific loaders (map our DataFrame shapes -> warehouse tables).
+# --------------------------------------------------------------------------- #
+_FF_RENAME = {
+    "Mkt-RF": "mkt_rf", "SMB": "smb", "HML": "hml", "RMW": "rmw",
+    "CMA": "cma", "RF": "rf", "MOM": "mom",
+}
+
+
+def load_universe(universe: pd.DataFrame) -> int:
+    """Upsert the universe table. Accepts columns ticker[, name, exchange,
+    gics_sector]; missing optional columns are filled null."""
+    df = universe.copy()
+    for c in ("name", "exchange", "gics_sector"):
+        if c not in df.columns:
+            df[c] = None
+    df = df[["ticker", "name", "exchange", "gics_sector"]]
+    return upsert(df, "universe", ["ticker"])
+
+
+def load_prices_wide(close: pd.DataFrame, volume: pd.DataFrame | None = None) -> int:
+    """Upsert prices from wide (date x ticker) close/volume frames -> long rows."""
+    long = close.stack().rename("close").reset_index()
+    long.columns = ["date", "ticker", "close"]
+    if volume is not None:
+        vlong = volume.stack().rename("volume").reset_index()
+        vlong.columns = ["date", "ticker", "volume"]
+        long = long.merge(vlong, on=["date", "ticker"], how="left")
+    else:
+        long["volume"] = None
+    long["date"] = pd.to_datetime(long["date"]).dt.date
+    return upsert(long[["ticker", "date", "close", "volume"]], "prices", ["ticker", "date"])
+
+
+def load_ff_factors(ff: pd.DataFrame) -> int:
+    """Upsert FF5+MOM (date-indexed, FF column names) -> ff_factors."""
+    df = ff.rename(columns=_FF_RENAME).reset_index()
+    df = df.rename(columns={df.columns[0]: "date"})
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    cols = ["date"] + [c for c in _FF_RENAME.values() if c in df.columns]
+    return upsert(df[cols], "ff_factors", ["date"])
+
+
+def load_macro(macro: pd.DataFrame) -> int:
+    """Upsert macro (date-indexed: yield_curve, vix, hy_spread) -> macro."""
+    df = macro.reset_index().rename(columns={macro.index.name or "index": "date"})
+    df = df.rename(columns={df.columns[0]: "date"})
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    cols = ["date"] + [c for c in ("yield_curve", "vix", "hy_spread") if c in df.columns]
+    return upsert(df[cols], "macro", ["date"])
+
+
+def load_fundamental_facts(facts: pd.DataFrame) -> int:
+    """Upsert raw fundamental facts (already in fundamental_facts column shape)."""
+    df = facts.copy()
+    for c in ("period_end", "filed_date"):
+        df[c] = pd.to_datetime(df[c]).dt.date
+    return upsert(df, "fundamental_facts",
+                  ["ticker", "concept", "period_end", "filed_date"])

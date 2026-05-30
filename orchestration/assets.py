@@ -1,0 +1,96 @@
+"""Dagster ingestion assets — fetch from source, write to the Postgres warehouse.
+
+Each asset is independently materializable and reads its upstream inputs from the
+DB where possible, so "rerun just fundamentals" or "rerun just prices" is one
+click. Assets are incremental where the source supports it (prices extend from
+the last stored month; fundamentals re-pull only tickers with a new filing).
+"""
+from __future__ import annotations
+
+import pandas as pd
+from dagster import asset
+
+from src.config import load_config
+from src.data import db, factors, fundamentals, prices, universe
+
+
+def _date_range() -> tuple[str, str]:
+    start = load_config("data")["prices"]["start_date"]
+    end = pd.Timestamp.today().strftime("%Y-%m-%d")
+    return start, end
+
+
+@asset(group_name="ingest", compute_kind="edgar")
+def universe_table(context) -> None:
+    """Current US-listed common stocks (names + exchange) -> universe table."""
+    uni = universe.fetch_us_listed().reset_index()
+    n = db.load_universe(uni)
+    context.add_output_metadata({"rows": n})
+
+
+@asset(group_name="ingest", deps=[universe_table], compute_kind="yfinance")
+def prices_table(context) -> None:
+    """Incremental monthly prices + liquidity filter -> prices/universe tables."""
+    start, end = _date_range()
+    tickers = db.read_sql("SELECT ticker FROM universe ORDER BY ticker")["ticker"].tolist()
+
+    last = db.read_sql("SELECT MAX(date) AS d FROM prices")["d"].iloc[0]
+    if last is not None:
+        start = (pd.Timestamp(last) - pd.offsets.MonthBegin(2)).strftime("%Y-%m-%d")
+
+    close = prices.download_prices(tickers, start, end, field="Close")
+    volume = prices.download_prices(tickers, start, end, field="Volume")
+    adv = prices.avg_dollar_volume(close, volume.reindex_like(close))
+    tradeable = universe.apply_liquidity_filters(
+        pd.DataFrame(index=close.columns), dollar_volume=adv
+    ).index.tolist()
+    keep = [t for t in tradeable if t in close.columns]
+
+    monthly_close = prices.to_monthly_close(close[keep])
+    n = db.load_prices_wide(monthly_close)
+    context.add_output_metadata({"tickers": len(keep), "rows": n})
+
+
+@asset(group_name="ingest", deps=[universe_table], compute_kind="edgar")
+def fundamental_facts(context) -> None:
+    """EDGAR raw facts (restatement history), incremental on new filings."""
+    tickers = db.read_sql("SELECT ticker FROM universe ORDER BY ticker")["ticker"].tolist()
+
+    existing = db.read_sql(
+        "SELECT ticker, MAX(filed_date) AS f FROM fundamental_facts GROUP BY ticker"
+    )
+    existing_latest = (
+        dict(zip(existing["ticker"], pd.to_datetime(existing["f"])))
+        if not existing.empty
+        else None
+    )
+
+    facts = fundamentals.fetch_fundamentals(tickers, existing_latest=existing_latest)
+    n = db.load_fundamental_facts(facts) if not facts.empty else 0
+    context.add_output_metadata({"rows": n, "tickers": int(facts["ticker"].nunique()) if n else 0})
+
+
+@asset(group_name="ingest", deps=[universe_table], compute_kind="edgar")
+def sectors(context) -> None:
+    """GICS sector (from SEC SIC) -> universe.gics_sector."""
+    tickers = db.read_sql("SELECT ticker FROM universe ORDER BY ticker")["ticker"].tolist()
+    sec = fundamentals.fetch_sectors(tickers)
+    sec = sec.dropna(subset=["gics_sector"])
+    n = db.upsert(sec[["ticker", "gics_sector"]], "universe", ["ticker"]) if not sec.empty else 0
+    context.add_output_metadata({"updated": n})
+
+
+@asset(group_name="ingest", compute_kind="ken_french")
+def ff_factors(context) -> None:
+    """Fama-French 5 + momentum (monthly) -> ff_factors table."""
+    start, end = _date_range()
+    n = db.load_ff_factors(factors.load_factors(start, end))
+    context.add_output_metadata({"rows": n})
+
+
+@asset(group_name="ingest", compute_kind="fred")
+def macro(context) -> None:
+    """Macro regime series (yield curve, VIX, HY spread) -> macro table."""
+    start, end = _date_range()
+    n = db.load_macro(factors.load_macro(start, end))
+    context.add_output_metadata({"rows": n})
