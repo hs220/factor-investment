@@ -8,7 +8,7 @@
 #   ./deploy/deploy_dagster.sh logs
 #   ./deploy/deploy_dagster.sh down
 #
-# UI: http://192.168.68.70:3000
+# UI: http://192.168.68.70:3030
 set -euo pipefail
 
 NAS_HOST="${NAS_HOST:-hsheng@192.168.68.70}"
@@ -56,6 +56,7 @@ POSTGRES_PASSWORD=\$pw
 DAGSTER_PG_HOST=192.168.68.70
 FACTOR_DB_HOST=192.168.68.70
 FACTOR_DB_PORT=5433
+DAGSTER_PORT=3030
 EOF
   echo 'wrote $DG_DIR/.env'
 "
@@ -75,7 +76,7 @@ remote "cd '$DG_DIR' && $DOCKER compose ps"
 
 cat <<EOF
 
-==> Dagster UI:  http://192.168.68.70:3000
+==> Dagster UI:  http://192.168.68.70:3030
     Materialize fundamentals (the restatement-aware re-fetch) from the UI,
     or headless:
       ./deploy/deploy_dagster.sh materialize-fundamentals
