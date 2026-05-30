@@ -1,0 +1,12 @@
+# Dagster orchestration image deps: data layer + Dagster (no heavy ML stack).
+pandas>=2.0
+numpy>=1.24
+yfinance>=0.2.40
+requests>=2.31
+pyarrow>=14.0
+sqlalchemy>=2.0
+psycopg2-binary>=2.9
+pyyaml>=6.0
+dagster>=1.13,<1.14
+dagster-webserver>=1.13,<1.14
+dagster-postgres>=0.24,<0.25

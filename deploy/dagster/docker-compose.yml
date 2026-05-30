@@ -1,0 +1,30 @@
+# Dagster on the NAS: webserver (UI on :3000) + daemon (schedules/run-queue).
+# Both share one image and connect to Postgres on the host (Timescale @ :5433).
+#
+#   POSTGRES_PASSWORD + DAGSTER_PG_HOST come from deploy/dagster/.env.
+#   Bring up:  ./deploy/deploy_dagster.sh up
+
+x-dagster: &dagster
+  build:
+    context: ../..
+    dockerfile: deploy/dagster/Dockerfile
+  image: factor-dagster:latest
+  environment:
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in deploy/dagster/.env}
+    DAGSTER_PG_HOST: ${DAGSTER_PG_HOST:-192.168.68.70}
+    FACTOR_DB_HOST: ${FACTOR_DB_HOST:-192.168.68.70}
+    FACTOR_DB_PORT: ${FACTOR_DB_PORT:-5433}
+  restart: unless-stopped
+
+services:
+  dagster-webserver:
+    <<: *dagster
+    container_name: factor-dagster-web
+    command: ["dagster-webserver", "-h", "0.0.0.0", "-p", "3000", "-w", "workspace.yaml"]
+    ports:
+      - "${DAGSTER_PORT:-3000}:3000"
+
+  dagster-daemon:
+    <<: *dagster
+    container_name: factor-dagster-daemon
+    command: ["dagster-daemon", "run", "-w", "workspace.yaml"]

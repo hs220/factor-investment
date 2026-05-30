@@ -1,0 +1,19 @@
+# Dagster instance config. Run/event/schedule storage in the 'dagster' Postgres
+# database (separate DB on the same Timescale instance). Password and host come
+# from the environment so no secrets live in this file.
+storage:
+  postgres:
+    postgres_db:
+      hostname:
+        env: DAGSTER_PG_HOST
+      username: factor
+      password:
+        env: POSTGRES_PASSWORD
+      db_name: dagster
+      port: 5433
+
+telemetry:
+  enabled: false
+
+run_queue:
+  max_concurrent_runs: 2
