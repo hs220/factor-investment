@@ -318,10 +318,13 @@ def fetch_fundamentals(
 # --------------------------------------------------------------------------- #
 # Sector (SIC) — belongs to the universe table, fetched alongside facts.
 # --------------------------------------------------------------------------- #
-def _sic_to_sector(sic: int | None) -> str | None:
-    if sic is None:
+def _sic_to_sector(sic: int | str | None) -> str | None:
+    if sic is None or sic == "":
         return None
-    s = int(sic)
+    try:
+        s = int(sic)
+    except (ValueError, TypeError):
+        return None
     if 6000 <= s <= 6799:
         return "Real Estate" if 6500 <= s <= 6799 else "Financials"
     if 2833 <= s <= 2836 or 8000 <= s <= 8099 or 3840 <= s <= 3851:
