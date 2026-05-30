@@ -1,25 +1,27 @@
-"""Point-in-time quarterly fundamentals from SEC EDGAR.
+"""Point-in-time fundamentals from SEC EDGAR — raw facts with restatement history.
 
-EDGAR is the upstream source of truth for US fundamentals: every public company
-files 10-K/10-Q in XBRL, and the ``companyfacts`` API exposes the full history
-with the actual ``filed`` date of each figure. That filing date is what makes
-the data true point-in-time (no lookahead).
+EDGAR is the upstream source of truth: every public company files 10-K/10-Q in
+XBRL, and the ``companyfacts`` API exposes every figure with the actual ``filed``
+date. We store **raw facts with full restatement history** — one row per
+value-change-point ``(ticker, concept, period_end, filed_date)`` — so any
+point-in-time query is correct even when a company restates a prior period.
 
-For each ticker we:
-  1. map ticker -> CIK,
-  2. pull companyfacts JSON,
-  3. extract the GAAP concepts we need (with fallbacks, since tags drift),
-  4. build a clean quarterly series (deriving Q4 = annual - 9mo where needed),
-  5. compute TTM flows, point-in-time stocks, and price-independent ratios,
-  6. stamp each quarter with ``availability_date`` = first filing date,
-  7. attach sector from the company's SIC code.
+Design split (see plans/architecture.md):
+- **This module** emits faithful raw facts: discrete quarterly values (flows) and
+  balance-sheet instants (stocks), each with the filing date at which that value
+  became public. A restatement is a new row at a later ``filed_date``.
+- **The feature layer** does as-of selection + derivation (TTM, ROE, accruals,
+  growth) — because a restatement of one quarter ripples into later TTM/growth,
+  derivation must happen against the as-of snapshot, not be pre-baked here.
 
-Valuation ratios needing market price (earnings yield, book-to-price, EV/EBITDA)
-are built later in the panel stage from these building blocks + monthly price.
+Output columns match the ``fundamental_facts`` table:
+``ticker, cik, concept, gaap_tag, period_end, fiscal_period, duration_days,
+filed_date, form, value, unit``.
 """
 from __future__ import annotations
 
 import time
+from itertools import groupby
 
 import pandas as pd
 import requests
@@ -60,8 +62,19 @@ _STOCK_CONCEPTS: dict[str, list[str]] = {
     "debt_cur": ["LongTermDebtCurrent", "DebtCurrent"],
     "shares": ["EntityCommonStockSharesOutstanding", "CommonStockSharesOutstanding"],
 }
+_ALL_CONCEPTS = {**{k: v for k, v in _FLOW_CONCEPTS.items()},
+                 **{k: v for k, v in _STOCK_CONCEPTS.items()}}
+_IS_FLOW = {k: True for k in _FLOW_CONCEPTS} | {k: False for k in _STOCK_CONCEPTS}
+
+_FACT_COLUMNS = [
+    "ticker", "cik", "concept", "gaap_tag", "period_end", "fiscal_period",
+    "duration_days", "filed_date", "form", "value", "unit",
+]
 
 
+# --------------------------------------------------------------------------- #
+# SEC session / CIK map / submissions
+# --------------------------------------------------------------------------- #
 def _session() -> requests.Session:
     s = requests.Session()
     s.headers.update({"User-Agent": load_config("data")["fundamentals"]["user_agent"]})
@@ -86,161 +99,6 @@ def get_cik_map(session: requests.Session | None = None) -> dict[str, str]:
     return _CIK_MAP
 
 
-def _concept_records(facts: dict, concept: str) -> list[dict] | None:
-    """Return the USD/shares unit records for a us-gaap or dei concept."""
-    for ns in ("us-gaap", "dei"):
-        node = facts.get(ns, {}).get(concept)
-        if node:
-            units = node.get("units", {})
-            for unit_key in ("USD", "shares", "USD/shares"):
-                if unit_key in units:
-                    return units[unit_key]
-    return None
-
-
-def _first_match(facts: dict, candidates: list[str]) -> list[dict] | None:
-    for c in candidates:
-        recs = _concept_records(facts, c)
-        if recs:
-            return recs
-    return None
-
-
-def _snap_to_quarter(df: pd.DataFrame) -> pd.DataFrame:
-    """Snap a period_end-indexed frame to calendar quarter-ends.
-
-    Different XBRL concepts report slightly different fiscal period-end dates
-    (e.g. 2020-09-26 vs 2020-09-30); snapping to the calendar quarter aligns
-    all concepts onto a common grid so TTM/joins work. If two raw dates map to
-    the same quarter, keep the later one.
-    """
-    if df.empty:
-        return df
-    df = df.copy()
-    df.index = df.index.to_period("Q").to_timestamp("Q").normalize()
-    return df[~df.index.duplicated(keep="last")].sort_index()
-
-
-def _quarterly_flow(records: list[dict]) -> pd.DataFrame:
-    """Clean quarterly series for a flow concept (as-first-reported).
-
-    Handles two filing styles uniformly:
-      - income-statement items tagged as discrete 3-month periods, and
-      - cash-flow items tagged only as year-to-date cumulatives (3/6/9/12-mo).
-
-    Records sharing a fiscal-period ``start`` are cumulative; differencing them
-    by ascending ``end`` yields the discrete quarterly increment (so Q4 falls
-    out of annual − 9-month automatically). Discrete 3-month records, when
-    present, take precedence. Returns DataFrame indexed by period_end with
-    columns ``val``, ``filed``.
-    """
-    three_m: dict[pd.Timestamp, tuple[float, pd.Timestamp]] = {}
-    by_start: dict[pd.Timestamp, list[tuple[pd.Timestamp, float, pd.Timestamp]]] = {}
-    for r in records:
-        if "start" not in r or "end" not in r or r.get("val") is None:
-            continue
-        start, end = pd.Timestamp(r["start"]), pd.Timestamp(r["end"])
-        filed = pd.Timestamp(r["filed"])
-        days = (end - start).days
-        if 80 <= days <= 100:                       # discrete quarter
-            prev = three_m.get(end)
-            if prev is None or filed < prev[1]:     # earliest filing wins (PIT)
-                three_m[end] = (float(r["val"]), filed)
-        elif 100 < days <= 380:                     # YTD cumulative (incl. annual)
-            by_start.setdefault(start, []).append((end, float(r["val"]), filed))
-
-    # Difference each cumulative (same-start) group to get quarterly increments.
-    derived: dict[pd.Timestamp, tuple[float, pd.Timestamp]] = {}
-    for _start, items in by_start.items():
-        items.sort(key=lambda x: x[0])
-        prev_val = 0.0
-        for end, val, filed in items:
-            inc = val - prev_val
-            prev_val = val
-            if end not in derived or filed < derived[end][1]:
-                derived[end] = (inc, filed)
-
-    # Discrete 3-month observations override derived ones.
-    quarter = {**derived, **three_m}
-    if not quarter:
-        return pd.DataFrame(columns=["val", "filed"])
-    df = (
-        pd.DataFrame(
-            [(e, v, f) for e, (v, f) in quarter.items()],
-            columns=["period_end", "val", "filed"],
-        )
-        .set_index("period_end")
-        .sort_index()
-    )
-    return _snap_to_quarter(df)
-
-
-def _quarterly_stock(records: list[dict]) -> pd.DataFrame:
-    """Point-in-time series for a balance-sheet (instant) concept."""
-    by_end: dict[pd.Timestamp, tuple[float, pd.Timestamp]] = {}
-    for r in records:
-        if r.get("val") is None or "end" not in r:
-            continue
-        end = pd.Timestamp(r["end"])
-        filed = pd.Timestamp(r["filed"])
-        prev = by_end.get(end)
-        if prev is None or filed < prev[1]:
-            by_end[end] = (float(r["val"]), filed)
-    if not by_end:
-        return pd.DataFrame(columns=["val", "filed"])
-    df = (
-        pd.DataFrame(
-            [(e, v, f) for e, (v, f) in by_end.items()],
-            columns=["period_end", "val", "filed"],
-        )
-        .set_index("period_end")
-        .sort_index()
-    )
-    return _snap_to_quarter(df)
-
-
-# Coarse SIC -> sector mapping (approximate GICS-like buckets for neutralization).
-def _sic_to_sector(sic: int | None) -> str | None:
-    if sic is None:
-        return None
-    s = int(sic)
-    if 100 <= s <= 999:
-        return "Materials"
-    if 1000 <= s <= 1499:
-        return "Energy" if s >= 1300 else "Materials"
-    if 1500 <= s <= 1799:
-        return "Industrials"
-    if 2000 <= s <= 2199 or 2080 <= s <= 2090:
-        return "Consumer Staples"
-    if 2830 <= s <= 2836 or 8000 <= s <= 8099 or s == 2835:
-        return "Health Care"
-    if 2800 <= s <= 2899:
-        return "Materials"
-    if 2900 <= s <= 2999 or 1300 <= s <= 1399:
-        return "Energy"
-    if 3570 <= s <= 3579 or 3670 <= s <= 3679 or 7370 <= s <= 7379:
-        return "Information Technology"
-    if 3000 <= s <= 3999:
-        return "Industrials"
-    if 4000 <= s <= 4799:
-        return "Industrials"
-    if 4800 <= s <= 4899:
-        return "Communication Services"
-    if 4900 <= s <= 4999:
-        return "Utilities"
-    if 5200 <= s <= 5999:
-        return "Consumer Discretionary"
-    if 5000 <= s <= 5199:
-        return "Consumer Discretionary"
-    if 6000 <= s <= 6499:
-        return "Financials"
-    if 6500 <= s <= 6799:
-        return "Real Estate"
-    if 7000 <= s <= 8999:
-        return "Communication Services" if 7800 <= s <= 7899 else "Consumer Discretionary"
-    return None
-
-
 def _fetch_submissions(cik: str, session: requests.Session) -> dict:
     """SEC submissions JSON (light): has SIC and the recent-filings list."""
     cfg = load_config("data")["fundamentals"]
@@ -256,89 +114,147 @@ def latest_filing_date(sub_json: dict) -> pd.Timestamp | None:
     return max((pd.Timestamp(d) for d in dates), default=None) if dates else None
 
 
-def _extract_ticker(
-    ticker: str, cik: str, session: requests.Session, sub_json: dict | None = None
-) -> pd.DataFrame:
+# --------------------------------------------------------------------------- #
+# Concept extraction with restatement history
+# --------------------------------------------------------------------------- #
+def _match_concept(facts: dict, candidates: list[str]) -> tuple[list[dict], str, str] | None:
+    """Return (records, unit, gaap_tag) for the first candidate present."""
+    for ns in ("us-gaap", "dei"):
+        ns_facts = facts.get(ns, {})
+        for tag in candidates:
+            node = ns_facts.get(tag)
+            if not node:
+                continue
+            units = node.get("units", {})
+            for unit_key in ("USD", "shares", "USD/shares"):
+                if unit_key in units:
+                    return units[unit_key], unit_key, tag
+    return None
+
+
+def _snap_q(ts: pd.Timestamp) -> pd.Timestamp:
+    """Snap a date to its calendar quarter-end (aligns concept period-ends)."""
+    return ts.to_period("Q").to_timestamp("Q").normalize()
+
+
+def _quarter_label(period_end: pd.Timestamp) -> str | None:
+    return {3: "Q1", 6: "Q2", 9: "Q3", 12: "Q4"}.get(period_end.month)
+
+
+def _flow_changepoints(records: list[dict]) -> list[tuple[pd.Timestamp, pd.Timestamp, float, str]]:
+    """Discrete-quarter value-change-points for a flow concept, across filings.
+
+    Event-sourced over ``filed`` date: as each filing arrives we update the known
+    3-month and cumulative-YTD values, recompute discrete quarters (YTD
+    differencing yields Q4 = annual - 9mo automatically), and emit a point
+    whenever a quarter's value changes. Returns (period_end, filed, value, form).
+    """
+    parsed = []
+    for r in records:
+        if r.get("val") is None or "start" not in r or "end" not in r:
+            continue
+        start, end = pd.Timestamp(r["start"]), pd.Timestamp(r["end"])
+        parsed.append((pd.Timestamp(r["filed"]), start, end, float(r["val"]),
+                       r.get("form", "")))
+    parsed.sort(key=lambda x: (x[0], x[2]))
+
+    # State, event-sourced over filings:
+    #  cumulative[fy_start][quarter_end] = value cumulative from fy_start
+    #    (includes the Q1 3-month, which IS the cumulative-to-Q1, so YTD
+    #     differencing yields each discrete quarter incl. Q4 = annual - 9mo)
+    #  three_mo[quarter_end] = directly-reported 3-month value (overrides diff)
+    cumulative: dict[pd.Timestamp, dict[pd.Timestamp, float]] = {}
+    three_mo: dict[pd.Timestamp, float] = {}
+    emitted: dict[pd.Timestamp, float] = {}
+    out: list[tuple[pd.Timestamp, pd.Timestamp, float, str]] = []
+
+    for filed, group in groupby(parsed, key=lambda x: x[0]):
+        form = ""
+        for _f, start, end, val, frm in group:
+            form = frm or form
+            qend = _snap_q(end)
+            days = (end - start).days
+            fy_start = pd.Timestamp(start).to_period("Q").to_timestamp(how="start")
+            if 0 <= days <= 380:
+                cumulative.setdefault(fy_start, {})[qend] = val
+            if 80 <= days <= 100:
+                three_mo[qend] = val
+
+        # Recompute discrete quarters: difference each cumulative chain, then
+        # let directly-reported 3-month values override (more reliable).
+        quarters: dict[pd.Timestamp, float] = {}
+        for _fy, ends in cumulative.items():
+            seq = sorted(ends)
+            for i, qend in enumerate(seq):
+                quarters[qend] = ends[qend] - (ends[seq[i - 1]] if i > 0 else 0.0)
+        quarters.update(three_mo)
+
+        for qend, val in quarters.items():
+            if emitted.get(qend) != val:
+                out.append((qend, filed, val, form))
+                emitted[qend] = val
+    return out
+
+
+def _instant_changepoints(records: list[dict]) -> list[tuple[pd.Timestamp, pd.Timestamp, float, str]]:
+    """Value-change-points for a balance-sheet (instant) concept, across filings."""
+    parsed = []
+    for r in records:
+        if r.get("val") is None or "end" not in r:
+            continue
+        parsed.append((pd.Timestamp(r["filed"]), pd.Timestamp(r["end"]),
+                       float(r["val"]), r.get("form", "")))
+    parsed.sort(key=lambda x: (x[0], x[1]))
+
+    latest: dict[pd.Timestamp, float] = {}
+    emitted: dict[pd.Timestamp, float] = {}
+    out: list[tuple[pd.Timestamp, pd.Timestamp, float, str]] = []
+
+    for filed, group in groupby(parsed, key=lambda x: x[0]):
+        form = ""
+        for _f, end, val, frm in group:
+            form = frm or form
+            latest[_snap_q(end)] = val
+        for qend, val in latest.items():
+            if emitted.get(qend) != val:
+                out.append((qend, filed, val, form))
+                emitted[qend] = val
+    return out
+
+
+def _extract_facts(ticker: str, cik: str, facts: dict) -> pd.DataFrame:
+    """Long raw-facts table for one ticker: every value-change-point per concept."""
+    rows: list[dict] = []
+    for concept, candidates in _ALL_CONCEPTS.items():
+        matched = _match_concept(facts, candidates)
+        if matched is None:
+            continue
+        records, unit, gaap_tag = matched
+        is_flow = _IS_FLOW[concept]
+        points = (_flow_changepoints if is_flow else _instant_changepoints)(records)
+        for period_end, filed, value, form in points:
+            rows.append({
+                "ticker": ticker,
+                "cik": cik,
+                "concept": concept,
+                "gaap_tag": gaap_tag,
+                "period_end": period_end,
+                "fiscal_period": _quarter_label(period_end),
+                "duration_days": 91 if is_flow else 0,
+                "filed_date": filed,
+                "form": form,
+                "value": value,
+                "unit": unit,
+            })
+    return pd.DataFrame(rows, columns=_FACT_COLUMNS)
+
+
+def fetch_company_facts(cik: str, session: requests.Session) -> dict:
     cfg = load_config("data")["fundamentals"]
-    facts_url = cfg["companyfacts_url"].format(cik=cik)
-    resp = session.get(facts_url, timeout=30)
+    resp = session.get(cfg["companyfacts_url"].format(cik=cik), timeout=30)
     if resp.status_code != 200:
-        return pd.DataFrame()
-    facts = resp.json().get("facts", {})
-    if not facts:
-        return pd.DataFrame()
-
-    flows, stocks = {}, {}
-    for field, cands in _FLOW_CONCEPTS.items():
-        recs = _first_match(facts, cands)
-        if recs is not None:
-            flows[field] = _quarterly_flow(recs)
-    for field, cands in _STOCK_CONCEPTS.items():
-        recs = _first_match(facts, cands)
-        if recs is not None:
-            stocks[field] = _quarterly_stock(recs)
-
-    if "revenue" not in flows or "equity" not in stocks:
-        return pd.DataFrame()
-
-    # Align everything on the union of quarter-ends.
-    ends = sorted(
-        set().union(*[d.index for d in flows.values()], *[d.index for d in stocks.values()])
-    )
-    out = pd.DataFrame(index=pd.DatetimeIndex(ends, name="period_end"))
-    filed_dates = pd.Series(pd.NaT, index=out.index)
-
-    for field, d in flows.items():
-        out[field] = d["val"].reindex(out.index)
-        filed_dates = filed_dates.fillna(d["filed"].reindex(out.index))
-    for field, d in stocks.items():
-        out[field] = d["val"].reindex(out.index)
-        filed_dates = filed_dates.fillna(d["filed"].reindex(out.index))
-
-    # TTM for flows (trailing 4 quarters).
-    for field in flows:
-        out[f"{field}_ttm"] = out[field].rolling(4, min_periods=4).sum()
-
-    # Total debt = long-term + current portion (either may be absent).
-    debt = out.get("debt_lt", pd.Series(index=out.index, dtype=float)).fillna(0) + out.get(
-        "debt_cur", pd.Series(index=out.index, dtype=float)
-    ).fillna(0)
-
-    result = pd.DataFrame(index=out.index)
-    result["revenue_ttm"] = out.get("revenue_ttm")
-    result["net_income_ttm"] = out.get("net_income_ttm")
-    result["gross_profit_ttm"] = out.get("gross_profit_ttm")
-    result["op_cashflow_ttm"] = out.get("op_cashflow_ttm")
-    # EBITDA ≈ operating income + D&A (EDGAR does not tag EBITDA directly).
-    result["ebitda_ttm"] = out.get("operating_income_ttm", pd.NA)
-    if "dna_ttm" in out:
-        result["ebitda_ttm"] = result["ebitda_ttm"].add(out["dna_ttm"], fill_value=0)
-    result["equity"] = out.get("equity")
-    result["assets"] = out.get("assets")
-    result["debt"] = debt.replace(0, pd.NA)
-    result["cash"] = out.get("cash")
-    result["shares"] = out.get("shares")
-
-    # Price-independent ratios.
-    result["roe"] = result["net_income_ttm"] / result["equity"].replace(0, pd.NA)
-    result["gross_margin"] = result["gross_profit_ttm"] / result["revenue_ttm"].replace(0, pd.NA)
-    result["profit_margin"] = result["net_income_ttm"] / result["revenue_ttm"].replace(0, pd.NA)
-    result["accruals"] = (result["net_income_ttm"] - result["op_cashflow_ttm"]) / result[
-        "assets"
-    ].replace(0, pd.NA)
-    result["revenue_growth_yoy"] = result["revenue_ttm"].pct_change(4)
-    result["asset_growth_yoy"] = result["assets"].pct_change(4)
-
-    result["availability_date"] = filed_dates.values
-    result["ticker"] = ticker
-
-    # Sector from SIC (reuse submissions JSON if already fetched).
-    if sub_json is None:
-        sub_json = _fetch_submissions(cik, session)
-    result["gics_sector"] = _sic_to_sector(sub_json.get("sic")) if sub_json else None
-    result["industry"] = sub_json.get("sicDescription") if sub_json else None
-
-    return result.reset_index()
+        return {}
+    return resp.json().get("facts", {})
 
 
 def fetch_fundamentals(
@@ -347,13 +263,15 @@ def fetch_fundamentals(
     existing_latest: dict[str, pd.Timestamp] | None = None,
     verbose: bool = True,
 ) -> pd.DataFrame:
-    """Fetch EDGAR quarterly fundamentals for many tickers (resilient).
+    """Fetch EDGAR raw facts (restatement history) for many tickers.
 
-    When ``existing_latest`` (ticker -> max availability_date already cached) is
-    given, the per-company submissions endpoint is checked first and the heavy
-    companyfacts pull is **skipped** for any ticker with no new filing since the
-    cached data — the incremental fast path. Returns rows only for tickers that
-    were (re)fetched; callers merge these into the existing cache.
+    Returns a long DataFrame matching ``fundamental_facts``. When
+    ``existing_latest`` (ticker -> max filed_date already stored) is given, the
+    light submissions endpoint is checked first and the heavy companyfacts pull
+    is skipped for tickers with no new filing — the incremental fast path.
+
+    Sector (from SIC) is returned separately via :func:`fetch_sectors` since it
+    belongs to the ``universe`` table, not the facts.
     """
     cfg = load_config("data")["fundamentals"]
     sleep = cfg.get("request_sleep", 0.12)
@@ -369,20 +287,23 @@ def fetch_fundamentals(
             no_cik.append(t)
             continue
         try:
-            sub = _fetch_submissions(cik, session)
-            time.sleep(sleep)
-            # Incremental skip: no new filing since what we already have.
             if existing_latest is not None and t in existing_latest:
+                sub = _fetch_submissions(cik, session)
+                time.sleep(sleep)
                 latest = latest_filing_date(sub)
                 if latest is not None and latest <= existing_latest[t]:
                     skipped += 1
                     continue
-            df = _extract_ticker(t, cik, session, sub_json=sub)
-            if not df.empty:
-                frames.append(df)
-            else:
-                failed.append(t)
+            facts = fetch_company_facts(cik, session)
             time.sleep(sleep)
+            if not facts:
+                failed.append(t)
+                continue
+            df = _extract_facts(t, cik, facts)
+            if df.empty:
+                failed.append(t)
+            else:
+                frames.append(df)
         except Exception:  # noqa: BLE001
             failed.append(t)
 
@@ -391,4 +312,57 @@ def fetch_fundamentals(
         if existing_latest is not None:
             msg += f", {skipped} unchanged-skipped"
         print(msg)
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=_FACT_COLUMNS)
+
+
+# --------------------------------------------------------------------------- #
+# Sector (SIC) — belongs to the universe table, fetched alongside facts.
+# --------------------------------------------------------------------------- #
+def _sic_to_sector(sic: int | None) -> str | None:
+    if sic is None:
+        return None
+    s = int(sic)
+    if 6000 <= s <= 6799:
+        return "Real Estate" if 6500 <= s <= 6799 else "Financials"
+    if 2833 <= s <= 2836 or 8000 <= s <= 8099 or 3840 <= s <= 3851:
+        return "Health Care"
+    if 3570 <= s <= 3577 or 3670 <= s <= 3679 or 7370 <= s <= 7379 or s == 3674:
+        return "Information Technology"
+    if 4800 <= s <= 4899 or 2700 <= s <= 2799 or 7800 <= s <= 7841:
+        return "Communication Services"
+    if 4900 <= s <= 4999:
+        return "Utilities"
+    if 1300 <= s <= 1399 or 2900 <= s <= 2999 or s == 1311:
+        return "Energy"
+    if 2800 <= s <= 2899 or 1000 <= s <= 1499 or 2600 <= s <= 2699 or 3300 <= s <= 3399:
+        return "Materials"
+    if 2000 <= s <= 2199 or 5400 <= s <= 5499 or 2080 <= s <= 2090:
+        return "Consumer Staples"
+    if 5200 <= s <= 5999 or 2300 <= s <= 2399 or 3700 <= s <= 3799 or 5700 <= s <= 5736:
+        return "Consumer Discretionary"
+    if 1500 <= s <= 1799 or 3400 <= s <= 3569 or 3580 <= s <= 3669 or 4000 <= s <= 4799:
+        return "Industrials"
+    return None
+
+
+def fetch_sectors(tickers: list[str], *, verbose: bool = False) -> pd.DataFrame:
+    """Map tickers -> (gics_sector, industry) via SEC submissions SIC code."""
+    session = _session()
+    cik_map = get_cik_map(session)
+    sleep = load_config("data")["fundamentals"].get("request_sleep", 0.12)
+    rows = []
+    for i, t in enumerate(tickers):
+        if verbose and i % 200 == 0:
+            print(f"  sectors {i}/{len(tickers)}...", flush=True)
+        cik = cik_map.get(t)
+        if not cik:
+            rows.append({"ticker": t, "gics_sector": None, "industry": None})
+            continue
+        sub = _fetch_submissions(cik, session)
+        time.sleep(sleep)
+        rows.append({
+            "ticker": t,
+            "gics_sector": _sic_to_sector(sub.get("sic")) if sub else None,
+            "industry": sub.get("sicDescription") if sub else None,
+        })
+    return pd.DataFrame(rows)

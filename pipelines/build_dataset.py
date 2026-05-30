@@ -91,16 +91,15 @@ def main() -> None:
     elif args.incremental and cache.exists(fname):
         # Only re-pull tickers whose latest filing post-dates our cache.
         existing = cache.load(fname)
-        latest = (
-            existing.groupby("ticker")["availability_date"].max().to_dict()
-        )
+        latest = existing.groupby("ticker")["filed_date"].max().to_dict()
         print(f"[3/5] Incremental fundamentals: checking {len(keep)} tickers "
               f"for new filings...")
         fresh = fundamentals.fetch_fundamentals(keep, existing_latest=latest)
         if not fresh.empty:
             combined = pd.concat([existing, fresh], ignore_index=True)
+            # raw facts are keyed (ticker, concept, period_end, filed_date)
             combined = combined.drop_duplicates(
-                subset=["ticker", "period_end"], keep="last"
+                subset=["ticker", "concept", "period_end", "filed_date"], keep="last"
             )
             cache.save(combined, fname)
             print(f"      merged {fresh['ticker'].nunique()} updated tickers")
