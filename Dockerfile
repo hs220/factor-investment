@@ -20,6 +20,9 @@ COPY config/ ./config/
 
 # Data lives on the mounted NAS volume.
 ENV FACTOR_DATA_ROOT=/data
+# Unbuffered stdout so pipeline progress ([N/5], EDGAR counters) streams to the
+# log live instead of block-buffering until the process exits.
+ENV PYTHONUNBUFFERED=1
 VOLUME ["/data"]
 
 # Default job is the full backfill; override for incremental in scheduler:
