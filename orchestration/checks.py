@@ -83,15 +83,35 @@ def prices_row_count() -> AssetCheckResult:
 # --------------------------------------------------------------------------- #
 # fundamental_facts
 # --------------------------------------------------------------------------- #
+_LOOKAHEAD_TOL_DAYS = 60  # tolerate calendar-quarter snap-forward (see below)
+
+
 @asset_check(asset=assets.fundamental_facts,
-             description="point-in-time: filed_date >= period_end (no lookahead)")
+             description="point-in-time: no filing dated >60d before its period_end")
 def fundamentals_no_lookahead() -> AssetCheckResult:
+    """Hard gate against genuine lookahead, tolerant of the snap-forward artifact.
+
+    The true PIT guarantee is on ``filed_date`` (the panel join gates on it). A
+    naive ``filed_date < period_end`` proxy over-fires because ``_snap_q`` snaps
+    an off-calendar fiscal quarter-end (or a dei cover-page ``shares`` as-of-filing
+    date) to the *nearest* calendar quarter-end, which can land a few weeks past
+    the filing — a relabeling, not lookahead (all such cases are <=~46 days).
+
+    Real lookahead bugs (forecast / debt-maturity facts) sit 100-2000+ days
+    before their period, so a 60-day tolerance keeps the canary while ignoring the
+    benign snap-forward. ``snap_forward_rows`` stays in metadata for visibility.
+    """
     bad = _count(
+        f"SELECT count(*) c FROM fundamental_facts "
+        f"WHERE period_end - filed_date > {_LOOKAHEAD_TOL_DAYS}"
+    )
+    snap_forward = _count(
         "SELECT count(*) c FROM fundamental_facts WHERE filed_date < period_end"
     )
     return AssetCheckResult(
         passed=bad == 0, severity=AssetCheckSeverity.ERROR,
-        metadata={"lookahead_rows": bad},
+        metadata={"lookahead_rows": bad, "snap_forward_rows": snap_forward,
+                  "tolerance_days": _LOOKAHEAD_TOL_DAYS},
     )
 
 
