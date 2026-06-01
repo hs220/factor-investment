@@ -125,11 +125,21 @@ def load_universe(universe: pd.DataFrame) -> int:
 
 
 def load_prices_wide(close: pd.DataFrame, volume: pd.DataFrame | None = None) -> int:
-    """Upsert prices from wide (date x ticker) close/volume frames -> long rows."""
-    long = close.stack().rename("close").reset_index()
+    """Upsert prices from wide (date x ticker) close/volume frames -> long rows.
+
+    Persists only real observations. ``pd.DataFrame(collected)`` in the downloader
+    unions every ticker's trading dates into a dense grid, so a name carries NaN
+    closes for months it didn't trade (pre-IPO / post-delisting). We also see
+    yfinance adjusted-close artifacts (negative / zero closes on names with heavy
+    reverse-split + return-of-capital history). Drop both here so the warehouse
+    holds only valid, positive prices — independent of pandas ``stack`` NaN
+    behavior across versions.
+    """
+    long = close.stack(dropna=False).rename("close").reset_index()
     long.columns = ["date", "ticker", "close"]
+    long = long[long["close"].notna() & (long["close"] > 0)]
     if volume is not None:
-        vlong = volume.stack().rename("volume").reset_index()
+        vlong = volume.stack(dropna=False).rename("volume").reset_index()
         vlong.columns = ["date", "ticker", "volume"]
         long = long.merge(vlong, on=["date", "ticker"], how="left")
     else:

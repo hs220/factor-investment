@@ -54,9 +54,16 @@ def universe_sector_coverage() -> AssetCheckResult:
 # --------------------------------------------------------------------------- #
 # prices
 # --------------------------------------------------------------------------- #
-@asset_check(asset=assets.prices_table, description="no non-positive close prices")
+@asset_check(asset=assets.prices_table, description="every stored close is present and positive")
 def prices_positive() -> AssetCheckResult:
-    bad = _count("SELECT count(*) c FROM prices WHERE close IS NOT NULL AND close <= 0")
+    # NaN must be matched explicitly: in Postgres NaN sorts greater than all
+    # numbers, so ``close <= 0`` is FALSE for NaN — the old check was blind to it
+    # while ~40% of rows were NaN grid-padding. ``close = 'NaN'`` matches (Postgres
+    # treats NaN = NaN as true).
+    bad = _count(
+        "SELECT count(*) c FROM prices "
+        "WHERE close IS NULL OR close = 'NaN' OR close <= 0"
+    )
     return AssetCheckResult(
         passed=bad == 0, severity=AssetCheckSeverity.ERROR, metadata={"bad_rows": bad}
     )
