@@ -17,3 +17,11 @@ telemetry:
 
 run_queue:
   max_concurrent_runs: 2
+
+# Reap orphaned runs: if a run's worker process dies (e.g. the container is
+# recreated mid-run during a deploy), mark the run FAILED instead of leaving it
+# STARTED forever. Without this a killed run hangs indefinitely in the UI.
+run_monitoring:
+  enabled: true
+  start_timeout_seconds: 300   # a run stuck in STARTING this long -> failed
+  poll_interval_seconds: 60
