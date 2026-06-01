@@ -64,6 +64,46 @@ def test_no_duplicate_changepoints_when_value_stable():
     assert len(F._instant_changepoints(recs)) == 1
 
 
+def test_snap_q_nearest_quarter_end():
+    # Off-calendar fiscal quarter-ends snap to the NEAREST calendar quarter-end,
+    # never pushed forward into a later quarter (the old containing-quarter bug).
+    assert F._snap_q(pd.Timestamp("2024-04-28")) == pd.Timestamp("2024-03-31")  # HD Q1
+    assert F._snap_q(pd.Timestamp("2024-07-28")) == pd.Timestamp("2024-06-30")  # HD Q2
+    assert F._snap_q(pd.Timestamp("2024-10-28")) == pd.Timestamp("2024-09-30")  # HD Q3
+    assert F._snap_q(pd.Timestamp("2024-01-28")) == pd.Timestamp("2023-12-31")  # HD Q4
+    # On-calendar dates are unchanged.
+    assert F._snap_q(pd.Timestamp("2024-03-31")) == pd.Timestamp("2024-03-31")
+
+
+def test_offcalendar_filer_no_lookahead():
+    # HD-style filer (quarters end ~end of Apr/Jul/Oct/Jan), each filed ~3 weeks
+    # later. Snapped period_end must never exceed the filing date.
+    recs = [
+        {"end": "2024-04-28", "val": 500e6, "filed": "2024-05-20", "form": "10-Q"},
+        {"end": "2024-07-28", "val": 510e6, "filed": "2024-08-19", "form": "10-Q"},
+        {"end": "2024-10-27", "val": 520e6, "filed": "2024-11-18", "form": "10-Q"},
+    ]
+    pts = F._instant_changepoints(recs)
+    assert pts, "expected change-points"
+    assert all(period_end <= filed for period_end, filed, _v, _f in pts)
+
+
+def test_future_dated_fact_dropped():
+    # Debt-maturity-schedule fact: period ends years after it was filed -> drop.
+    recs = [
+        {"end": "2030-09-30", "val": 1e9, "filed": "2024-10-30", "form": "10-Q"},
+        {"end": "2024-09-30", "val": 2e9, "filed": "2024-10-30", "form": "10-Q"},
+    ]
+    pts = F._instant_changepoints(recs)
+    assert len(pts) == 1
+    assert pts[0][0] == pd.Timestamp("2024-09-30")
+    # Same guard on the flow path.
+    frecs = [
+        {"start": "2030-07-01", "end": "2030-09-30", "val": 1e9, "filed": "2024-10-30", "form": "10-Q"},
+    ]
+    assert F._flow_changepoints(frecs) == []
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

@@ -133,8 +133,21 @@ def _match_concept(facts: dict, candidates: list[str]) -> tuple[list[dict], str,
 
 
 def _snap_q(ts: pd.Timestamp) -> pd.Timestamp:
-    """Snap a date to its calendar quarter-end (aligns concept period-ends)."""
-    return ts.to_period("Q").to_timestamp("Q").normalize()
+    """Snap a date to the NEAREST calendar quarter-end (aligns concept period-ends).
+
+    Snapping to the *containing* quarter's end would shove a fiscal period that
+    ends early in a calendar quarter — off-calendar filers ending ~Jan/Apr/Jul/Oct
+    (HD, CSCO, GAP, …) — up to ~2 months into the future, fabricating a period_end
+    later than the filing date and misaligning the fact into the wrong calendar
+    quarter. Nearest-quarter snapping shifts each off-calendar quarter to its
+    closest calendar quarter-end: monotonic and collision-free for every
+    fiscal-month pattern (consecutive fiscal quarters are ~91 days apart, as are
+    calendar quarter-ends, so they map one-to-one).
+    """
+    q = ts.to_period("Q")
+    this_end = q.to_timestamp("Q").normalize()
+    prev_end = (q - 1).to_timestamp("Q").normalize()
+    return prev_end if (ts - prev_end) < (this_end - ts) else this_end
 
 
 def _quarter_label(period_end: pd.Timestamp) -> str | None:
@@ -153,9 +166,11 @@ def _flow_changepoints(records: list[dict]) -> list[tuple[pd.Timestamp, pd.Times
     for r in records:
         if r.get("val") is None or "start" not in r or "end" not in r:
             continue
+        filed = pd.Timestamp(r["filed"])
         start, end = pd.Timestamp(r["start"]), pd.Timestamp(r["end"])
-        parsed.append((pd.Timestamp(r["filed"]), start, end, float(r["val"]),
-                       r.get("form", "")))
+        if end > filed:  # can't report actuals for a period ending after filing —
+            continue     # forward guidance / forecast facts; drop (no lookahead)
+        parsed.append((filed, start, end, float(r["val"]), r.get("form", "")))
     parsed.sort(key=lambda x: (x[0], x[2]))
 
     # State, event-sourced over filings:
@@ -202,8 +217,10 @@ def _instant_changepoints(records: list[dict]) -> list[tuple[pd.Timestamp, pd.Ti
     for r in records:
         if r.get("val") is None or "end" not in r:
             continue
-        parsed.append((pd.Timestamp(r["filed"]), pd.Timestamp(r["end"]),
-                       float(r["val"]), r.get("form", "")))
+        filed, end = pd.Timestamp(r["filed"]), pd.Timestamp(r["end"])
+        if end > filed:  # future-dated instant (e.g. debt-maturity schedule) — drop
+            continue
+        parsed.append((filed, end, float(r["val"]), r.get("form", "")))
     parsed.sort(key=lambda x: (x[0], x[1]))
 
     latest: dict[pd.Timestamp, float] = {}
