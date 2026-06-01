@@ -135,11 +135,14 @@ def load_prices_wide(close: pd.DataFrame, volume: pd.DataFrame | None = None) ->
     holds only valid, positive prices — independent of pandas ``stack`` NaN
     behavior across versions.
     """
-    long = close.stack(dropna=False).rename("close").reset_index()
+    # Modern pandas stack() keeps NaN cells (the old dropna=True default is gone,
+    # and passing dropna now raises) — which is how NaN grid-padding got loaded.
+    # Filter explicitly instead: keep only present, positive closes.
+    long = close.stack().rename("close").reset_index()
     long.columns = ["date", "ticker", "close"]
     long = long[long["close"].notna() & (long["close"] > 0)]
     if volume is not None:
-        vlong = volume.stack(dropna=False).rename("volume").reset_index()
+        vlong = volume.stack().rename("volume").reset_index()
         vlong.columns = ["date", "ticker", "volume"]
         long = long.merge(vlong, on=["date", "ticker"], how="left")
     else:
