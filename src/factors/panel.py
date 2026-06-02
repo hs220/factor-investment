@@ -104,16 +104,38 @@ def build_target(returns: pd.DataFrame) -> pd.DataFrame:
     return _melt(fwd, "forward_return")
 
 
-def assemble_panel(*, normalize: bool = True) -> pd.DataFrame:
-    """Build the full (ticker, month) panel from cached artifacts."""
+def _load_inputs(source: str):
+    """Return (returns, prices, fund, macro) from the warehouse or parquet cache."""
+    if source == "db":
+        from src.data import warehouse
+        return (
+            warehouse.load_returns_wide(),
+            warehouse.load_prices_wide(),
+            warehouse.load_fundamental_features(),
+            warehouse.load_macro(),
+        )
+    if source == "cache":
+        return (
+            cache.load("stock_returns_monthly.parquet"),
+            cache.load("stock_prices_monthly.parquet"),
+            cache.load("fundamentals_quarterly.parquet"),
+            cache.load("macro_monthly.parquet"),
+        )
+    raise ValueError(f"unknown source {source!r}; use 'db' or 'cache'")
+
+
+def assemble_panel(*, source: str = "db", normalize: bool = True) -> pd.DataFrame:
+    """Build the full (ticker, month) panel.
+
+    ``source="db"`` (default) reads the Postgres warehouse — the production
+    source of truth; ``source="cache"`` reads the legacy parquet artifacts in
+    ``data/processed/`` for offline use.
+    """
     fcfg = load_config("features")
     pcfg = fcfg["panel"]
     ncfg = fcfg["normalization"]
 
-    returns = cache.load("stock_returns_monthly.parquet")
-    prices = cache.load("stock_prices_monthly.parquet")
-    fund = cache.load("fundamentals_quarterly.parquet")
-    macro = cache.load("macro_monthly.parquet")
+    returns, prices, fund, macro = _load_inputs(source)
 
     # 1-2. base + price features
     panel = compute_price_features(returns)

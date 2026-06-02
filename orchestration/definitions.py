@@ -28,12 +28,14 @@ _ALL = [
     assets.prices_table,
     assets.fundamental_facts,
     assets.sectors,
+    assets.fundamental_features,
     assets.ff_factors,
     assets.macro,
 ]
 
 daily_job = define_asset_job(
-    "daily_ingest", selection=["prices_table", "fundamental_facts"]
+    "daily_ingest",
+    selection=["prices_table", "fundamental_facts", "fundamental_features"],
 )
 monthly_job = define_asset_job(
     "monthly_ingest", selection=["universe_table", "ff_factors", "macro", "sectors"]

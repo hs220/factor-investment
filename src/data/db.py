@@ -55,6 +55,19 @@ def read_sql(query: str, **params) -> pd.DataFrame:
         return pd.read_sql_query(text(query), conn, params=params or None)
 
 
+def to_records(df: pd.DataFrame) -> list[tuple]:
+    """DataFrame -> list of row tuples with every NaN/NaT mapped to ``None``.
+
+    ``astype(object)`` first: under pandas 3.x, ``.where(..., None)`` leaves NaN
+    in str/extension-dtype columns as a float ``nan`` (which psycopg2 would write
+    as the literal text ``'NaN'`` into a text column); casting to object makes the
+    ``None`` replacement stick across every column dtype, so missing values become
+    real SQL NULLs.
+    """
+    clean = df.astype(object).where(pd.notnull(df), None)
+    return list(clean.itertuples(index=False, name=None))
+
+
 def upsert(df: pd.DataFrame, table: str, conflict: list[str], *, chunksize: int = 10000) -> int:
     """Insert rows, updating non-key columns on conflict (Postgres ON CONFLICT).
 
@@ -78,8 +91,7 @@ def upsert(df: pd.DataFrame, table: str, conflict: list[str], *, chunksize: int 
     )
 
     # NaN/NaT -> None for SQL NULL; rows as plain tuples.
-    clean = df.where(pd.notnull(df), None)
-    records = list(clean.itertuples(index=False, name=None))
+    records = to_records(df)
 
     raw = get_engine().raw_connection()
     try:
@@ -176,6 +188,57 @@ def load_fundamental_facts(facts: pd.DataFrame) -> int:
         df[c] = pd.to_datetime(df[c]).dt.date
     return upsert(df, "fundamental_facts",
                   ["ticker", "concept", "period_end", "filed_date"])
+
+
+# DDL for the gold feature table — idempotent so an already-initialized DB
+# (where schema.sql only ran on first container init) picks up the table.
+_FFEAT_DDL = """
+CREATE TABLE IF NOT EXISTS fundamental_features (
+    ticker              text NOT NULL,
+    period_end          date NOT NULL,
+    availability_date   date,
+    gics_sector         text,
+    revenue_ttm         double precision,
+    net_income_ttm      double precision,
+    gross_profit_ttm    double precision,
+    op_cashflow_ttm     double precision,
+    ebitda_ttm          double precision,
+    equity              double precision,
+    assets              double precision,
+    debt                double precision,
+    cash                double precision,
+    shares              double precision,
+    roe                 double precision,
+    gross_margin        double precision,
+    profit_margin       double precision,
+    accruals            double precision,
+    revenue_growth_yoy  double precision,
+    asset_growth_yoy    double precision,
+    PRIMARY KEY (ticker, period_end)
+);
+CREATE INDEX IF NOT EXISTS idx_ffeat_asof
+    ON fundamental_features (ticker, availability_date);
+"""
+
+
+def ensure_fundamental_features_table() -> None:
+    """Create the gold ``fundamental_features`` table + index if absent."""
+    from sqlalchemy import text
+
+    with get_engine().begin() as conn:
+        for stmt in filter(str.strip, _FFEAT_DDL.split(";")):
+            conn.execute(text(stmt))
+
+
+def load_fundamental_features(features: pd.DataFrame) -> int:
+    """Upsert derived quarterly features (already in fundamental_features shape)."""
+    ensure_fundamental_features_table()
+    if features.empty:
+        return 0
+    df = features.copy()
+    for c in ("period_end", "availability_date"):
+        df[c] = pd.to_datetime(df[c]).dt.date
+    return upsert(df, "fundamental_features", ["ticker", "period_end"])
 
 
 def set_active(active_tickers: list[str]) -> int:

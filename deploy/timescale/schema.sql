@@ -1,10 +1,13 @@
 -- Factor-investment warehouse schema (Postgres + TimescaleDB).
 -- Runs once on first container init (mounted into docker-entrypoint-initdb.d).
 --
--- Design: silver layer. Raw XBRL facts are stored with FULL restatement history
--- (every filing), so any point-in-time / as-of query is correct even when a
--- company restates a prior period. Derived metrics (TTM, ROE, accruals, growth)
--- are NOT stored here — they are computed in the feature layer with as-of logic.
+-- Design: medallion layers. ``fundamental_facts`` is the SILVER layer — raw XBRL
+-- facts with FULL restatement history (every filing), so any point-in-time /
+-- as-of query is correct even when a company restates a prior period.
+-- ``fundamental_features`` is the GOLD/feature layer — the derived per-quarter
+-- metrics (TTM, ROE, accruals, growth) rolled up from the raw facts with as-of
+-- logic and stamped with an availability_date; it is MATERIALIZED (refreshed by
+-- the fundamental_features Dagster asset) rather than recomputed on every read.
 
 CREATE EXTENSION IF NOT EXISTS timescaledb;
 
@@ -62,6 +65,38 @@ CREATE TABLE IF NOT EXISTS fundamental_facts (
 CREATE INDEX IF NOT EXISTS idx_ff_asof
     ON fundamental_facts (ticker, concept, period_end, filed_date DESC);
 CREATE INDEX IF NOT EXISTS idx_ff_filed ON fundamental_facts (filed_date);
+
+-- ---------------------------------------------------------------------------
+-- Fundamental features: GOLD layer. One per-quarter row per (ticker, period_end)
+-- derived from fundamental_facts (TTM flows, balance-sheet levels, ratios),
+-- stamped with availability_date for the panel's point-in-time as-of join.
+-- Materialized by the fundamental_features Dagster asset.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS fundamental_features (
+    ticker              text NOT NULL,
+    period_end          date NOT NULL,
+    availability_date   date,            -- when the whole row became public (PIT)
+    gics_sector         text,
+    revenue_ttm         double precision,
+    net_income_ttm      double precision,
+    gross_profit_ttm    double precision,
+    op_cashflow_ttm     double precision,
+    ebitda_ttm          double precision,
+    equity              double precision,
+    assets              double precision,
+    debt                double precision,
+    cash                double precision,
+    shares              double precision,
+    roe                 double precision,
+    gross_margin        double precision,
+    profit_margin       double precision,
+    accruals            double precision,
+    revenue_growth_yoy  double precision,
+    asset_growth_yoy    double precision,
+    PRIMARY KEY (ticker, period_end)
+);
+CREATE INDEX IF NOT EXISTS idx_ffeat_asof
+    ON fundamental_features (ticker, availability_date);
 
 -- ---------------------------------------------------------------------------
 -- Fama-French 5 + momentum (monthly) and macro regime series (monthly).

@@ -102,6 +102,29 @@ def sectors(context) -> None:
     context.add_output_metadata({"updated": n, "with_sector": mapped})
 
 
+@asset(group_name="ingest", deps=[fundamental_facts, sectors], compute_kind="pandas")
+def fundamental_features(context) -> None:
+    """Derive quarterly TTM/ratio features from raw facts -> fundamental_features.
+
+    Gold/feature layer: rolls the silver ``fundamental_facts`` (raw, restatement-
+    versioned) up into one per-quarter row per (ticker, period_end) with TTM
+    flows, balance-sheet levels, ratios, and an availability_date for the panel's
+    point-in-time join. Pure pandas compute over the warehouse — no external call.
+    """
+    from src.factors.fundamentals_features import derive_fundamental_features
+
+    facts = db.read_sql(
+        "SELECT ticker, concept, period_end, filed_date, value, duration_days "
+        "FROM fundamental_facts"
+    )
+    secs = db.read_sql("SELECT ticker, gics_sector FROM universe")
+    feats = derive_fundamental_features(facts, secs)
+    n = db.load_fundamental_features(feats)
+    context.add_output_metadata(
+        {"rows": n, "tickers": int(feats["ticker"].nunique()) if not feats.empty else 0}
+    )
+
+
 @asset(group_name="ingest", compute_kind="ken_french", retry_policy=_RETRY)
 def ff_factors(context) -> None:
     """Fama-French 5 + momentum (monthly) -> ff_factors table."""

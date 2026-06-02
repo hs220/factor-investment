@@ -145,6 +145,45 @@ def fundamentals_unique_keys() -> AssetCheckResult:
 
 
 # --------------------------------------------------------------------------- #
+# fundamental_features (derived gold layer)
+# --------------------------------------------------------------------------- #
+@asset_check(asset=assets.fundamental_features,
+             description="point-in-time: availability_date not >60d before period_end")
+def fundamental_features_no_lookahead() -> AssetCheckResult:
+    """Same PIT guard as the raw facts: availability stamps must not predate the
+    reporting period (beyond the benign snap-forward tolerance)."""
+    bad = _count(
+        f"SELECT count(*) c FROM fundamental_features "
+        f"WHERE period_end - availability_date > {_LOOKAHEAD_TOL_DAYS}"
+    )
+    return AssetCheckResult(
+        passed=bad == 0, severity=AssetCheckSeverity.ERROR,
+        metadata={"lookahead_rows": bad, "tolerance_days": _LOOKAHEAD_TOL_DAYS},
+    )
+
+
+@asset_check(asset=assets.fundamental_features, description="row count not collapsed (partial build)")
+def fundamental_features_row_count() -> AssetCheckResult:
+    n = _count("SELECT count(*) c FROM fundamental_features")
+    return AssetCheckResult(
+        passed=n >= 20_000, severity=AssetCheckSeverity.ERROR, metadata={"rows": n}
+    )
+
+
+@asset_check(asset=assets.fundamental_features, description="no duplicate (ticker, period_end)")
+def fundamental_features_unique_keys() -> AssetCheckResult:
+    dups = _count(
+        """SELECT count(*) c FROM (
+             SELECT 1 FROM fundamental_features
+             GROUP BY ticker, period_end HAVING count(*) > 1
+           ) t"""
+    )
+    return AssetCheckResult(
+        passed=dups == 0, severity=AssetCheckSeverity.ERROR, metadata={"dup_keys": dups}
+    )
+
+
+# --------------------------------------------------------------------------- #
 # ff_factors / macro
 # --------------------------------------------------------------------------- #
 @asset_check(asset=assets.ff_factors, description="FF factors fresh + non-null")
@@ -184,6 +223,9 @@ ALL_CHECKS = [
     fundamentals_no_lookahead,
     fundamentals_concepts,
     fundamentals_unique_keys,
+    fundamental_features_no_lookahead,
+    fundamental_features_row_count,
+    fundamental_features_unique_keys,
     ff_factors_fresh,
     macro_fresh,
 ]
