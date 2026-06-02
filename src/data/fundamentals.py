@@ -418,8 +418,46 @@ def _sic_to_sector(sic: int | str | None) -> str | None:
     return None
 
 
-def fetch_sectors(tickers: list[str], *, verbose: bool = False) -> pd.DataFrame:
-    """Map tickers -> (gics_sector, industry) via SEC submissions SIC code."""
+# yfinance's sector vocabulary -> our GICS labels. Fallback for names whose SEC
+# submissions endpoint has a blank `sic` (regional banks, BDCs/closed-end funds,
+# some foreign issuers all return sic='' from EDGAR even with a valid CIK).
+_YF_SECTOR_MAP = {
+    "Financial Services": "Financials",
+    "Technology": "Information Technology",
+    "Healthcare": "Health Care",
+    "Energy": "Energy",
+    "Industrials": "Industrials",
+    "Consumer Cyclical": "Consumer Discretionary",
+    "Consumer Defensive": "Consumer Staples",
+    "Basic Materials": "Materials",
+    "Real Estate": "Real Estate",
+    "Communication Services": "Communication Services",
+    "Utilities": "Utilities",
+}
+
+
+def _yf_sector(ticker: str) -> str | None:
+    """Best-effort GICS sector from yfinance .info (fallback when SEC SIC blank)."""
+    import yfinance as yf
+
+    try:
+        info = yf.Ticker(ticker).info or {}
+    except Exception:
+        return None
+    return _YF_SECTOR_MAP.get(info.get("sector"))
+
+
+def fetch_sectors(
+    tickers: list[str], *, verbose: bool = False, yf_fallback: bool = True
+) -> pd.DataFrame:
+    """Map tickers -> (sic, gics_sector, industry, sector_source).
+
+    Primary source is the SEC submissions SIC code. When that is blank/unmapped
+    and ``yf_fallback`` is set, fall back to yfinance's sector (mapped to our
+    GICS labels) so banks, BDCs/closed-end funds, and foreign issuers that EDGAR
+    leaves unclassified still get a sector instead of forming a NULL group that
+    sector-neutral normalization would drop.
+    """
     session = _session()
     cik_map = get_cik_map(session)
     sleep = load_config("data")["fundamentals"].get("request_sleep", 0.12)
@@ -428,16 +466,20 @@ def fetch_sectors(tickers: list[str], *, verbose: bool = False) -> pd.DataFrame:
         if verbose and i % 200 == 0:
             print(f"  sectors {i}/{len(tickers)}...", flush=True)
         cik = cik_map.get(t)
-        if not cik:
-            rows.append({"ticker": t, "gics_sector": None, "industry": None})
-            continue
-        sub = _fetch_submissions(cik, session)
-        time.sleep(sleep)
+        sub = _fetch_submissions(cik, session) if cik else None
+        if cik:
+            time.sleep(sleep)
         sic = sub.get("sic") if sub else None
+        gics = _sic_to_sector(sic)
+        source = "sec_sic" if gics else None
+        if gics is None and yf_fallback:
+            gics = _yf_sector(t)
+            source = "yfinance" if gics else None
         rows.append({
             "ticker": t,
             "sic": str(sic) if sic not in (None, "") else None,
-            "gics_sector": _sic_to_sector(sic),
+            "gics_sector": gics,
             "industry": sub.get("sicDescription") if sub else None,
+            "sector_source": source,
         })
     return pd.DataFrame(rows)

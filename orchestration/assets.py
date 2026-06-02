@@ -85,11 +85,13 @@ def fundamental_facts(context) -> None:
 
 @asset(group_name="ingest", deps=[universe_table], compute_kind="edgar", retry_policy=_RETRY)
 def sectors(context) -> None:
-    """GICS sector (from SEC SIC) -> universe.gics_sector.
+    """GICS sector (SEC SIC, yfinance fallback) -> universe.gics_sector.
 
     Independent of prices: SIC classification has nothing to do with liquidity.
     Scopes to the last-known investable set via is_active (persisted by the
-    prior prices run), so it needs no hard dependency on prices_table.
+    prior prices run), so it needs no hard dependency on prices_table. Names
+    EDGAR leaves with a blank SIC (banks, BDCs/closed-end funds, some foreign
+    issuers) fall back to yfinance's sector so they aren't left NULL.
     """
     tickers = db.read_sql(
         "SELECT ticker FROM universe WHERE is_active ORDER BY ticker"
@@ -98,8 +100,14 @@ def sectors(context) -> None:
     # Store raw sic too, so future mapping changes are an instant re-map
     # (scripts/remap_sectors.py) with no EDGAR re-fetch.
     n = db.upsert(sec[["ticker", "sic", "gics_sector"]], "universe", ["ticker"]) if not sec.empty else 0
-    mapped = int(sec["gics_sector"].notna().sum())
-    context.add_output_metadata({"updated": n, "with_sector": mapped})
+    src = sec["sector_source"].value_counts().to_dict() if not sec.empty else {}
+    context.add_output_metadata({
+        "updated": n,
+        "with_sector": int(sec["gics_sector"].notna().sum()),
+        "via_sec_sic": int(src.get("sec_sic", 0)),
+        "via_yfinance": int(src.get("yfinance", 0)),
+        "unmapped": int(sec["gics_sector"].isna().sum()),
+    })
 
 
 @asset(group_name="ingest", deps=[fundamental_facts, sectors], compute_kind="pandas")
