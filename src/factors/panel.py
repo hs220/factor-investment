@@ -5,6 +5,9 @@ Pipeline:
   2. Price/technical features (momentum, volatility) computed per ticker.
   3. Point-in-time fundamental join: for each (ticker, month) pick the most
      recent quarter whose ``availability_date <= month-end`` (merge_asof).
+  3b. Sector tag from the universe table (ticker-level), independent of the
+     fundamentals join, so sector-neutral normalization keeps price/macro
+     features on names without a fundamental filing.
   4. Valuation ratios from fundamentals + month-end market cap (so they update
      monthly while accounting inputs update on filing cadence).
   5. Macro regime columns broadcast across all stocks at each date.
@@ -60,7 +63,7 @@ def pit_join_fundamentals(panel: pd.DataFrame, fund: pd.DataFrame) -> pd.DataFra
     fund = fund.sort_values("availability_date")
     panel = panel.sort_values("date")
     keep = [
-        "ticker", "availability_date", "gics_sector",
+        "ticker", "availability_date",
         "net_income_ttm", "ebitda_ttm", "equity", "assets", "debt", "cash", "shares",
         "roe", "gross_margin", "profit_margin", "accruals",
         "revenue_growth_yoy", "asset_growth_yoy",
@@ -105,7 +108,12 @@ def build_target(returns: pd.DataFrame) -> pd.DataFrame:
 
 
 def _load_inputs(source: str):
-    """Return (returns, prices, fund, macro) from the warehouse or parquet cache."""
+    """Return (returns, prices, fund, macro, sectors) from warehouse or cache.
+
+    ``sectors`` is a ticker -> gics_sector map used to tag every row's sector
+    independently of the fundamentals join, so price/macro features survive on
+    names that have a sector in the universe but no fundamental filing yet.
+    """
     if source == "db":
         from src.data import warehouse
         return (
@@ -113,13 +121,19 @@ def _load_inputs(source: str):
             warehouse.load_prices_wide(),
             warehouse.load_fundamental_features(),
             warehouse.load_macro(),
+            warehouse.load_sectors(),
         )
     if source == "cache":
+        fund = cache.load("fundamentals_quarterly.parquet")
+        # Legacy offline path: derive the ticker->sector map from fundamentals
+        # (preserves the cache path's historical behavior).
+        sectors = fund[["ticker", "gics_sector"]] if "gics_sector" in fund else None
         return (
             cache.load("stock_returns_monthly.parquet"),
             cache.load("stock_prices_monthly.parquet"),
-            cache.load("fundamentals_quarterly.parquet"),
+            fund,
             cache.load("macro_monthly.parquet"),
+            sectors,
         )
     raise ValueError(f"unknown source {source!r}; use 'db' or 'cache'")
 
@@ -135,7 +149,7 @@ def assemble_panel(*, source: str = "db", normalize: bool = True) -> pd.DataFram
     pcfg = fcfg["panel"]
     ncfg = fcfg["normalization"]
 
-    returns, prices, fund, macro = _load_inputs(source)
+    returns, prices, fund, macro, sectors = _load_inputs(source)
 
     # 1-2. base + price features
     panel = compute_price_features(returns)
@@ -143,6 +157,15 @@ def assemble_panel(*, source: str = "db", normalize: bool = True) -> pd.DataFram
 
     # 3. PIT fundamentals
     panel = pit_join_fundamentals(panel, fund)
+
+    # 3b. sector tag from the universe (NOT the fundamentals join): every name
+    #     with a known sector keeps its price/macro features under sector-neutral
+    #     normalization, even if it has no fundamental filing yet.
+    if sectors is not None:
+        smap = sectors.dropna(subset=["gics_sector"]).drop_duplicates("ticker")
+        panel = panel.merge(smap[["ticker", "gics_sector"]], on="ticker", how="left")
+    else:
+        panel["gics_sector"] = np.nan
 
     # 4. valuation ratios
     panel = compute_valuation_ratios(panel)

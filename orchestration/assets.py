@@ -135,7 +135,7 @@ def ff_factors(context) -> None:
 
 @asset(group_name="ingest", compute_kind="fred", retry_policy=_RETRY)
 def macro(context) -> None:
-    """Macro regime series (yield curve, VIX, HY spread) -> macro table."""
+    """Macro regime series (yield curve, VIX, credit spread) -> macro table."""
     start, end = _date_range()
     n = db.load_macro(factors.load_macro(start, end))
     context.add_output_metadata({"rows": n})

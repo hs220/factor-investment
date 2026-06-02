@@ -114,9 +114,9 @@ CREATE TABLE IF NOT EXISTS ff_factors (
 
 CREATE TABLE IF NOT EXISTS macro (
     date         date PRIMARY KEY,
-    yield_curve  double precision,
-    vix          double precision,
-    hy_spread    double precision
+    yield_curve   double precision,
+    vix           double precision,
+    credit_spread double precision   -- Moody's Baa - 10y Treasury (BAA10Y)
 );
 
 -- ---------------------------------------------------------------------------

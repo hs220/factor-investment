@@ -172,12 +172,44 @@ def load_ff_factors(ff: pd.DataFrame) -> int:
     return upsert(df[cols], "ff_factors", ["date"])
 
 
+# Idempotent migration: the macro credit-spread column was renamed
+# hy_spread -> credit_spread (source switched from the license-restricted ICE
+# BofA HY OAS to Moody's Baa-10y, BAA10Y). schema.sql only runs on fresh
+# container init, so rename in place on an already-initialized DB.
+_MACRO_MIGRATE = """
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_name = 'macro' AND column_name = 'hy_spread')
+     AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_name = 'macro' AND column_name = 'credit_spread')
+  THEN
+    ALTER TABLE macro RENAME COLUMN hy_spread TO credit_spread;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_name = 'macro' AND column_name = 'credit_spread')
+  THEN
+    ALTER TABLE macro ADD COLUMN credit_spread double precision;
+  END IF;
+END $$;
+"""
+
+
+def ensure_macro_schema() -> None:
+    """Idempotently migrate the macro table's credit-spread column name."""
+    from sqlalchemy import text
+
+    with get_engine().begin() as conn:
+        conn.execute(text(_MACRO_MIGRATE))
+
+
 def load_macro(macro: pd.DataFrame) -> int:
-    """Upsert macro (date-indexed: yield_curve, vix, hy_spread) -> macro."""
+    """Upsert macro (date-indexed: yield_curve, vix, credit_spread) -> macro."""
+    ensure_macro_schema()
     df = macro.reset_index().rename(columns={macro.index.name or "index": "date"})
     df = df.rename(columns={df.columns[0]: "date"})
     df["date"] = pd.to_datetime(df["date"]).dt.date
-    cols = ["date"] + [c for c in ("yield_curve", "vix", "hy_spread") if c in df.columns]
+    cols = ["date"] + [c for c in ("yield_curve", "vix", "credit_spread") if c in df.columns]
     return upsert(df[cols], "macro", ["date"])
 
 

@@ -42,4 +42,4 @@ features:
   macro:
     - yield_curve
     - vix
-    - hy_spread
+    - credit_spread

@@ -1,7 +1,7 @@
 """Fama-French factors and macro regime data.
 
 - FF5 + Momentum: direct CSV-zip download from the Ken French data library.
-- Macro: FRED public CSV API (yield curve, HY credit spread) + VIX via yfinance.
+- Macro: FRED public CSV API (yield curve, credit spread) + VIX via yfinance.
 
 These are benchmark/attribution and regime inputs; both fetched at monthly
 frequency aligned to month-end.
@@ -99,12 +99,12 @@ def _fetch_fred(series_id: str, start: str) -> pd.Series:
 
 
 def load_macro(start: str, end: str) -> pd.DataFrame:
-    """Monthly macro regime features: yield curve, VIX, HY credit spread."""
+    """Monthly macro regime features: yield curve, VIX, credit spread."""
     cfg = load_config("data")["factors"]
     yc = cfg["macro_series"]["yield_curve"]  # [long, short]
     long_s = _fetch_fred(yc[0], start)
     short_s = _fetch_fred(yc[1], start)
-    hy = _fetch_fred(cfg["macro_series"]["hy_spread"], start)
+    credit = _fetch_fred(cfg["macro_series"]["credit_spread"], start)
 
     vix = yf.download(
         cfg["vix_ticker"], start=start, end=end, auto_adjust=True, progress=False
@@ -114,7 +114,7 @@ def load_macro(start: str, end: str) -> pd.DataFrame:
         {
             "yield_curve": (long_s - short_s).resample("ME").last(),
             "vix": vix.resample("ME").last(),
-            "hy_spread": hy.resample("ME").last(),
+            "credit_spread": credit.resample("ME").last(),
         }
     )
     return macro.loc[start:end]

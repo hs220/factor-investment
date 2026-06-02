@@ -43,8 +43,8 @@ def load_fundamental_features() -> pd.DataFrame:
 
 
 def load_macro() -> pd.DataFrame:
-    """Macro regime series, date-indexed (yield_curve, vix, hy_spread)."""
-    df = db.read_sql("SELECT date, yield_curve, vix, hy_spread FROM macro")
+    """Macro regime series, date-indexed (yield_curve, vix, credit_spread)."""
+    df = db.read_sql("SELECT date, yield_curve, vix, credit_spread FROM macro")
     df["date"] = pd.to_datetime(df["date"])
     return df.set_index("date").sort_index()
 

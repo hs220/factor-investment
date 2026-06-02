@@ -39,7 +39,11 @@ factors:
   ff5_momentum: true           # Ken French FF5 + momentum
   macro_series:                # FRED series ids
     yield_curve: ["GS10", "GS2"]   # 10y - 2y
-    hy_spread: "BAMLH0A0HYM2"
+    # Credit spread (risk-appetite regime). Moody's Baa corporate yield minus
+    # 10y Treasury — daily, full history from 1986, freely redistributable.
+    # NB: the ICE BofA HY OAS series (BAMLH0A0HYM2) is license-restricted on
+    # FRED; its public CSV only returns ~3 recent years, so it can't backfill.
+    credit_spread: "BAA10Y"
   vix_ticker: "^VIX"           # via yfinance
 
 cache:
