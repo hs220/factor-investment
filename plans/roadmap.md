@@ -1,176 +1,85 @@
-# Roadmap: Factor Analysis for the Roth IRA (Strategy B)
+# Plan: Strategy B — Cross-Sectional Stock-Selection ML Pipeline
 
-The canonical, end-to-end plan — keyed to the six steps of the factor-research
-workflow. This is the index that ties together the two design docs:
-- **`modeling.md`** — the *modeling logic* (problem formulation, features, eval).
-- **`architecture.md`** — the *production infra* (Postgres/Timescale warehouse,
-  Dagster assets, medallion bronze→silver→gold).
+## Context
 
-This doc is the source of truth for **what we're building, in what order, and
-what's already done**. Update the status markers as we go.
+The repo currently has an ad-hoc data notebook (`notebooks/01_data_pipeline.ipynb`), a `data/` cache, and a `config/universe.yaml` that the user has judged not worth keeping. We're tearing those down and rebuilding the data layer properly as a **src-first library**, then building Strategy B end-to-end.
 
-## Goal
+Strategy B = pick the stocks that will **out-rank** their peers over the next month, and hold a long-only, sector-neutral basket of the top names in a Roth IRA.
 
-Pick the stocks that will **out-rank** their peers over the next month, and hold
-a **long-only, sector-neutral** basket of the top names in a Roth IRA. Classical
-Fama-French factor analysis as the backbone, ML-enhanced cross-sectional ranking
-on top.
-
-### Locked decisions (do not relitigate without cause)
-- **Long-only** (Roth prohibits shorting) → we care most about ranking the *top*
-  of the distribution correctly.
+**Decisions locked with the user:**
+- **Long-only** (Roth prohibits shorting) — we care most about ranking the *top* of the distribution correctly.
 - **Target: 1-month forward return**, as a within-sector cross-sectional rank.
 - **Sector-neutral** ranking/selection (within GICS sector).
-- **Universe: Russell 3000** (~3,000 names; small-cap breadth where premia live).
-- **Strategy B (stock selection) first**; Strategy A (ETF allocation) reuses the
-  same infra later.
-- **Roth advantage:** no capital-gains drag → factor rotation / turnover is viable.
+- **Strategy B first**; Strategy A (ETF allocation) reuses the same infra later.
+- **Universe: Russell 3000** (~3,000 names) — ~6× the breadth of the S&P 500 and includes the small-cap segment where factor premiums are strongest.
 
-### Invariants that must hold at every step
-- **No lookahead / PIT:** features at month `t` use only data known by end of `t`;
-  the target covers `(t, t+1]`. Fundamentals are stamped with a filing-availability
-  date and forward-filled from there. `.shift(1)` discipline on all features.
-- **Walk-forward only:** expanding window + a **1-month embargo** (sized to the
-  *longest* horizon = 30d, so 5/10/30d labels never leak). Never random K-fold,
-  never in-sample evaluation.
-- **Evaluate on rank quality, not return levels:** Information Coefficient
-  (per-date Spearman corr of preds vs realized), its IR (`mean(IC)/std(IC)`), and
-  long-only top-quantile spread vs benchmark — never RMSE on returns.
-- **Caveats stated on every result:** survivorship bias (current-membership
-  universe), ~5y fundamental depth (yfinance/EDGAR limit).
+## Architecture (src-first, the workflow correction)
 
----
+- **`src/` is the library** — all real logic is written here as functions/classes from the start, reviewed as normal code.
+- **`notebooks/` are thin clients** — they `import` from `src/` for EDA, visualization, and reporting only. No reusable logic lives in a notebook.
+- **`pipelines/` are production** — schedulable `.py` entry points that orchestrate `src/` functions end-to-end (cron-friendly). What a notebook *walks through*, a pipeline script *runs*.
 
-## The six-step pipeline
+```
+src/
+  data/      universe.py  prices.py  fundamentals.py  factors.py  cache.py
+  factors/   panel.py  normalize.py  evaluate.py
+  models/    walkforward.py  rankers.py
+  portfolio/ construct.py
+  backtest/  engine.py  metrics.py  attribution.py
+pipelines/   build_dataset.py  train.py  backtest.py
+notebooks/   thin EDA/reporting clients that import from src/
+config/      data.yaml  features.yaml  model.yaml
+data/        raw/  processed/   (regenerated; gitignored)
+```
 
-> **The big picture on status.** The original build (`modeling.md`, stages 0–5)
-> implemented all six steps **on local parquet**. The warehouse/Dagster migration
-> (`architecture.md` Phases 1–2) so far has only rebuilt **Step 1** on the new
-> infra. The model/portfolio/backtest *logic* (Steps 3–6) is **pure
-> DataFrame-in/out compute and is reusable as-is** — the parquet coupling lives
-> only in `panel.py` (`cache.load`), `query.py` (DuckDB), and the three
-> `pipelines/*.py` scripts. So the next phase is: **port the feature/panel layer
-> (Step 2) onto the warehouse — including the one genuinely missing piece, the
-> raw-facts→ratios bridge — then re-wire Steps 3–6 to read the warehouse-built
-> panel and run as Dagster assets.**
+`CLAUDE.md`'s "Notebook-First Development" section is **rewritten** to this library-first model as part of step 0.
 
-### 1. Pull data  —  ✅ DONE (on the warehouse)
-Sources & landing tables (Postgres/Timescale `factor` DB):
+## Problem Formulation (unchanged — the part that must stay right)
 
-| Source | Table | Notes |
+- **Unit:** panel keyed by `(ticker, month)`.
+- **Features `X[(i,t)]`:** point-in-time signals known at `t`, **cross-sectionally rank/z-scored within each date**, sector-neutralized.
+- **Target `y[(i,t)]`:** 1-month forward return, as a within-sector cross-sectional rank.
+- **Evaluate on Information Coefficient** (per-date Spearman rank corr of preds vs. realized), its IR (`mean(IC)/std(IC)`), and the **long-only top-quantile spread over a benchmark** — never RMSE on return levels.
+- **Walk-forward validation** (expanding window) with a 1-month **embargo**; never random K-fold.
+- **Integrity:** PIT features only; fundamentals lagged by fiscal-period-end + ~3 months; `.shift(1)` discipline on all features.
+
+## Universe & Data Layer (`src/data/`)
+
+- **`universe.py`** — fetch Russell 3000 constituents from the iShares **IWV** holdings CSV; apply **liquidity filters** (min price ≥ $5, min 60-day avg dollar-volume threshold, common-stock only — drop ADRs/ETFs/units). Emit the point-in-time tradeable list per rebalance date.
+- **`prices.py`** — chunked monthly price/volume download (reuse the chunked-download pattern), cached to parquet.
+- **`fundamentals.py`** — historical **quarterly** financials (`yf.Ticker.quarterly_financials/_balance_sheet/_cashflow`); compute valuation/quality/growth ratios; align each to its **filing-availability date**. This is the slow path (~3,000 tickers ≈ 30–45 min, rate-limited) — fetch once, cache aggressively, support incremental refresh.
+  - **Why quarterly, not monthly:** companies only file financials quarterly (10-Q) / annually (10-K) — monthly fundamentals do not exist at the source. In the monthly panel, each fundamental is **forward-filled from its filing-availability date** until the next filing supersedes it, so a `(ticker, month)` row always holds the most recent value publicly known as of that month. Price-derived features (momentum, vol, size) update monthly; fundamentals update on filing cadence. This mixed-cadence join is the normal structure for equity factor panels.
+- **`factors.py`** — FF5+MOM (direct Ken French CSV download) and FRED macro series (yield curve, VIX, HY spread).
+- **`cache.py`** — parquet read/write helpers; `data/` is regenerated and gitignored.
+
+**Known limitations (documented, not blocking v1):**
+- Fundamental history is ~5y (yfinance limit) regardless of universe size — expanding helps *breadth*, not fundamental *time depth*. Price/technical features still get full history.
+- Survivorship bias worsens with a current-membership universe; true fix (delisted names) needs a paid PIT source (Sharadar/EOD/Norgate). v1 accepts it with the caveat stated in every result.
+- Two feature tiers: train v1 on the recent window where all features exist (~3,000 × ~60 months ≈ 180k rows); a price-only long-history track is a later option.
+
+## Build Sequence
+
+Each stage = `src/` module(s) + a thin notebook (EDA/validation) + a pipeline entry point where it makes sense.
+
+| Stage | `src/` work | Thin client / pipeline |
 |---|---|---|
-| iShares **IWV** holdings | `universe` | ticker, name, exchange, `gics_sector` (from SEC SIC), `is_active` (liquidity-passing set) |
-| **yfinance** | `prices` (hypertable) | monthly close/volume; liquidity filters applied |
-| **SEC EDGAR** | `fundamental_facts` | **restatement-aware raw facts**, PIT-keyed `(ticker, concept, period_end, filed_date)` |
-| **Ken French** | `ff_factors` | monthly FF5 + MOM |
-| **FRED** | `macro` | yield curve, VIX, HY spread |
+| **0. Teardown & rework** | Delete `notebooks/01_data_pipeline.ipynb`, `data/`, `config/`. Rewrite `CLAUDE.md` workflow section. Add new `config/*.yaml`. | — |
+| **1. Data layer** | `src/data/{universe,prices,fundamentals,factors,cache}.py` | `pipelines/build_dataset.py`; `notebooks/01_data_eda.ipynb` |
+| **2. Feature panel** | `src/factors/{panel,normalize}.py` — assemble `(ticker,month)` panel, PIT join + forward-fill, cross-sectional rank/z-score, sector-neutralize, build 1-month target | `notebooks/02_panel_eda.ipynb` |
+| **3. Signal analysis** | `src/factors/evaluate.py` — IC utilities | `notebooks/03_signal_ic.ipynb` (single-signal IC baseline + sign sanity) |
+| **4. ML ranking** | `src/models/{walkforward,rankers.py}` — expanding-window CV w/ embargo; ElasticNet baseline → LightGBM/XGBoost (regression, then `lambdarank`) | `pipelines/train.py`; `notebooks/04_model_ic.ipynb` |
+| **5. Backtest** | `src/portfolio/construct.py` (long-only top-N, sector-neutral, position caps); `src/backtest/{engine,metrics,attribution}.py` (cost-aware sim; Sharpe/Sortino/DD/turnover; FF5+MOM attribution) | `pipelines/backtest.py`; `notebooks/05_backtest_report.ipynb` |
 
-- Dagster ingestion assets + schedules (daily prices/fundamentals incremental;
-  monthly universe/FF/macro/sectors), `RetryPolicy`, `run_monitoring`.
-- **Data-quality asset checks** in `orchestration/checks.py` (PIT no-lookahead,
-  positive prices, freshness, coverage, unique keys).
-- **Recently fixed:** the `fundamentals_no_lookahead` failure — nearest-quarter
-  `_snap_q` + drop future-dated facts; `fundamental_facts` re-materialized.
+The earlier idea of a standalone `02_ff5_regression` notebook is **repurposed** into `src/backtest/attribution.py` (used in stage 5 and later by Strategy A).
 
-### 2. Create signals / features  —  🟡 THE MAIN GAP
-Two sub-parts. The first does not exist yet for the new format; the second exists
-but reads parquet.
+## Verification
 
-**2a. Fundamentals derivation bridge — ⛔ MISSING (the linchpin).**
-The new `fundamental_facts` table is *long, raw, per-concept* (revenue, net_income,
-assets, equity, cash, debt, shares, …) with change-points across filings. The
-panel join (`pit_join_fundamentals`) expects *per-(ticker, quarter)* **TTM
-aggregates + ratios** (`net_income_ttm`, `ebitda_ttm`, `roe`, `gross_margin`,
-`profit_margin`, `accruals`, `revenue_growth_yoy`, `asset_growth_yoy`, …) each
-stamped with an **`availability_date`**. We must build the transform:
-`fundamental_facts (long) → quarterly ratios (wide) + availability_date`.
-This unblocks everything downstream. → new `src/factors/fundamentals_features.py`.
+- **Pipelines:** each `pipelines/*.py` runs clean to completion and writes expected parquet artifacts; notebooks execute top-to-bottom via `jupyter nbconvert --execute` with no cell errors.
+- **PIT integrity:** assert zero rows where a fundamental's `availability_date > observation_month`; spot-check one ticker/month by hand.
+- **Leakage test:** walk-forward folds never overlap; embargo enforced; a **shuffled-target** run yields IC ≈ 0.
+- **Signal sanity:** single-signal IC signs match theory (value/momentum positive, high-vol negative).
+- **Strategy validity:** report IC mean/IR, top-quantile spread vs. benchmark, turnover, and FF5+MOM-**residual** alpha — all annotated with the survivorship caveat.
 
-**2b. Panel assembly — ✅ logic exists, 🟡 reads parquet.**
-`src/factors/panel.py::assemble_panel` already does: price/technical features
-(momentum 12-2 / 6-1, volatility), PIT `merge_asof` fundamental join, valuation
-ratios from month-end market cap (earnings yield, book/price, EV/EBITDA, size),
-macro broadcast, target construction, and cross-sectional **sector-neutral
-normalization** (`normalize.py`). Re-wire its inputs from `cache.load(...)` →
-warehouse reads (via `src/data/db.py`), fed by 2a.
+## Out of Scope (this phase)
 
-**Feature families:** value, quality, growth, momentum, size, low-vol, macro regime.
-
-### 3. Examine signal strength  —  ✅ logic exists, runs on the panel
-`src/factors/evaluate.py` — IC utilities. Single-signal IC baseline + **sign
-sanity** (value/momentum positive, high-vol negative), IC IR, quantile spread.
-Run it on the *warehouse-built* panel as the first validation gate of Step 2.
-
-### 4. Modeling  —  ✅ logic exists (source-agnostic)
-`src/models/walkforward.py` + `rankers.py` — expanding-window CV; **ElasticNet
-baseline → LightGBM/XGBoost** (regression, then `lambdarank`). Cross-sectional
-ranker. DataFrame-in/out, so no rewrite of model code — only the panel feeding it
-changes.
-
-### 5. Model validation  —  ✅ logic exists (part of the harness)
-Walk-forward folds never overlap; **1-month embargo** enforced; **shuffled-target
-run yields IC ≈ 0** (leakage test). PIT-integrity assertion: zero rows where a
-fundamental's `availability_date > observation_month`.
-
-### 6. Backtesting  —  ✅ logic exists (source-agnostic)
-- `src/portfolio/construct.py` — long-only top-N, sector-neutral, position caps.
-- `src/backtest/{engine,metrics,attribution}.py` — cost-aware sim; Sharpe /
-  Sortino / max-DD / turnover; **FF5+MOM-residual alpha** attribution.
-Re-wire to read warehouse predictions; write a `portfolios` book.
-
----
-
-## Next phase — concrete build sequence (the critical path)
-
-Maps to `architecture.md` Phase 3–4. Each item = `src/` work + a thin
-notebook/validation + a Dagster asset (warehouse-native, gold parquet export for
-fast training reads).
-
-1. **Fundamentals-derivation bridge** (`src/factors/fundamentals_features.py`) —
-   `fundamental_facts → quarterly TTM ratios + availability_date`. Unit-tested
-   against a hand-checked ticker. *Unblocks all downstream.*
-2. **`panel_monthly` asset** — re-wire `assemble_panel` to read the warehouse
-   (universe/prices/macro/ff + the bridge output). Write panel to gold parquet
-   export (+ optional `panel` table). PIT-integrity assert.
-3. **Signal-strength gate** — run `evaluate.py` single-signal IC on the new panel;
-   confirm signs/magnitudes are sane before training. (Step 3.)
-4. **`pred_30d` asset** — port `walkforward` inference → `predictions` hypertable
-   `(date, ticker, horizon, model_version)`. Include the **shuffle leakage test**
-   as an asset check / CI gate. (Steps 4–5.)
-5. **`selection_portfolio` asset** — `construct` top-N sector-neutral → `portfolios`
-   table. (Step 6.)
-6. **Backtest report** — cost-aware sim + FF5+MOM attribution over the new store;
-   `notebooks/05_backtest_report.ipynb` as the thin client.
-7. **Later — Timing track** (`architecture.md` Phase 3 tail): `panel_daily` +
-   `pred_10d/5d` overlay (daily price/microstructure features). Ships *after* the
-   30d selection core proves out. Embargo already sized for 30d.
-
-### New tables to add (per `architecture.md` data model)
-- `predictions` (hypertable) — `(date, ticker, horizon, model_version)` → OOS score.
-- `portfolios` — `(date, ticker, strategy)` → target weight.
-
----
-
-## Status at a glance
-
-| Step | Logic | On warehouse? | Action |
-|---|---|---|---|
-| 1. Pull data | ✅ | ✅ | done (DQ checks live) |
-| 2a. Fundamentals→ratios bridge | ⛔ | — | **build (linchpin)** |
-| 2b. Panel assembly | ✅ | 🟡 parquet | re-wire to DB |
-| 3. Signal strength (IC) | ✅ | 🟡 | run on new panel |
-| 4. Modeling | ✅ | 🟡 | port to `pred_30d` asset |
-| 5. Validation | ✅ | 🟡 | embargo + shuffle gate |
-| 6. Backtest | ✅ | 🟡 | re-wire to predictions/portfolios |
-
-## Out of scope (this phase)
-Strategy A (ETF allocation), torch/deep models, RL allocation, paid PIT data
-(survivorship fix), live monitoring/rebalancing. The data layer, walk-forward
-harness, backtester, and attribution are built so all of these reuse them.
-
-## Open decisions
-- Persist `panel_monthly` to a Postgres table **and** gold parquet, or gold
-  parquet only (training reads bulk)? *Leaning: gold parquet primary, table optional.*
-- `predictions` model-versioning scheme (git SHA vs semantic tag).
-- When to invest in the survivorship-bias fix (paid PIT source) vs ship v1 with
-  the caveat.
+Strategy A (ETF allocation), torch/deep models, RL, live monitoring/rebalancing, paid PIT data. The data layer, walk-forward harness, backtester, and attribution built here are designed for all of them to reuse.
