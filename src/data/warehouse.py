@@ -14,9 +14,16 @@ Requires DB connectivity (``POSTGRES_PASSWORD`` env + LAN access); see
 """
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from src.data import db
+
+# Stale labels (e.g. a literal "NaN"/"None" string from an earlier sector remap)
+# that must become real NaN, so they never form a spurious sector group under
+# sector-neutral normalization. Mirrors the coercion in
+# src/factors/fundamentals_features.py.
+_JUNK_SECTORS = {"NaN": np.nan, "nan": np.nan, "None": np.nan, "none": np.nan, "": np.nan}
 
 
 def load_prices_wide() -> pd.DataFrame:
@@ -50,7 +57,7 @@ def load_macro() -> pd.DataFrame:
 
 
 def load_sectors() -> pd.DataFrame:
-    """Investable ticker -> gics_sector (the universe table)."""
-    return db.read_sql(
-        "SELECT ticker, gics_sector FROM universe WHERE is_active"
-    )
+    """Investable ticker -> gics_sector (the universe table), junk coerced to NaN."""
+    df = db.read_sql("SELECT ticker, gics_sector FROM universe WHERE is_active")
+    df["gics_sector"] = df["gics_sector"].replace(_JUNK_SECTORS)
+    return df
