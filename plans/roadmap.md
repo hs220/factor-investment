@@ -80,6 +80,33 @@ The earlier idea of a standalone `02_ff5_regression` notebook is **repurposed** 
 - **Signal sanity:** single-signal IC signs match theory (value/momentum positive, high-vol negative).
 - **Strategy validity:** report IC mean/IR, top-quantile spread vs. benchmark, turnover, and FF5+MOM-**residual** alpha — all annotated with the survivorship caveat.
 
+## Next Phase: Daily Multi-Horizon Panel + Timing Models
+
+The monthly panel (`assemble_panel`, source="db") drives the **selection** model
+(1-month forward, ≈ t+21 trading days). The next phase adds a **daily** panel and
+**multiple prediction horizons** — t+5 / t+10 / t+30 day forward returns — so we
+can train a timing overlay on top of selection (architecture.md Phase 3,
+`pred_30d`/`pred_10d`/`pred_5d`).
+
+Design decisions (locked):
+- **New `panel_daily`, separate from the monthly panel** — t+5/t+10 need daily
+  resolution; do **not** retrofit the monthly `02` panel. ~21× the rows
+  (3,976 × daily). Price/microstructure features recompute daily; fundamentals
+  still forward-fill by `availability_date` (filing cadence unchanged).
+- **One panel, N target columns** (`target_5d, target_10d, target_30d`), not N
+  panels — features are shared across horizons; only the target + embargo differ.
+  Parameterize: `build_target(returns, horizon)` and
+  `assemble_panel(horizons=[5,10,30])`.
+- **Embargo = the longest horizon (30d)** in the walk-forward harness, so an
+  overlapping short-horizon label can't leak across folds into a longer one
+  (`src/models/walkforward.py`). This is the key leakage trap.
+- N models train on the same panel, each selecting its target column.
+
+Build it via the **promotion path** (CLAUDE.md): prototype as a `panel_daily`
+notebook over `src/` → user review → fix → productionize. Long-term target: a
+`panel_daily` Dagster asset (gold table + checks), same pattern as
+`fundamental_features`.
+
 ## Out of Scope (this phase)
 
 Strategy A (ETF allocation), torch/deep models, RL, live monitoring/rebalancing, paid PIT data. The data layer, walk-forward harness, backtester, and attribution built here are designed for all of them to reuse.

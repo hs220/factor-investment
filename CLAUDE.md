@@ -51,6 +51,29 @@ factor-investment/
 3. For repeatable runs, wire the `src/` calls into a `pipelines/*.py` entry point
 4. Notebooks never hold logic worth keeping — they are demos/reports over `src/`
 
+### Promotion Path (notebook → review → production)
+Each stage graduates through three gates. **Do not skip ahead to productionizing
+before the notebook has been reviewed.**
+
+1. **Prototype (Claude writes).** Implement the logic as functions in `src/`, then
+   build/extend a thin `notebooks/NN_*.ipynb` that imports and exercises it —
+   reads inputs from the **warehouse** (`source="db"`), shows the EDA/validation
+   that proves it works, and writes its output artifact for the next stage.
+2. **Review (user reviews).** The user reads the notebook and its outputs. This is
+   the human gate — surface assumptions, data-quality caveats, and design choices
+   here, not after productionizing.
+3. **Fix.** Resolve outstanding issues found in review (logic, leakage, coverage,
+   edge cases). Iterate on `src/` + notebook until the user signs off.
+4. **Productionize.** Wire the reviewed `src/` calls into a schedulable
+   `pipelines/*.py` entry point. **Long-term target: every stage becomes a Dagster
+   asset in `orchestration/`** — materialized into a warehouse table (gold layer)
+   with asset checks, the same pattern as `fundamental_features`. The notebook
+   remains as the living EDA/report over that stage; the asset is what runs
+   unattended. Deploy per [[nas-deploy-ordering]] (push before deploy).
+
+Rule of thumb: **notebook = the reviewable prototype + report; pipeline/asset =
+the productionized, scheduled, checked version of the same `src/` logic.**
+
 ## Tech Stack
 
 ### Active
