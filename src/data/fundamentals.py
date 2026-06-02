@@ -329,7 +329,12 @@ def fetch_fundamentals(
         if existing_latest is not None:
             msg += f", {skipped} unchanged-skipped"
         print(msg)
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=_FACT_COLUMNS)
+    out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=_FACT_COLUMNS)
+    # Library-boundary DQ gate: shape/dtype/PIT contract before the facts are
+    # ever cached or written to the warehouse. Lazy import breaks the cycle
+    # (schemas imports the concept set from this module).
+    from src.data.schemas import validate_fundamental_facts
+    return validate_fundamental_facts(out)
 
 
 # --------------------------------------------------------------------------- #
