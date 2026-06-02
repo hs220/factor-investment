@@ -13,7 +13,7 @@ set -euo pipefail
 
 NAS_HOST="${NAS_HOST:-hsheng@192.168.68.70}"
 NAS_DIR="${NAS_DIR:-/volume1/docker/factor-investment}"
-BRANCH="${BRANCH:-strategy-b-pipeline}"
+BRANCH="${BRANCH:-master}"
 REPO_URL="${REPO_URL:-git@github.com:hs220/factor-investment.git}"
 DOCKER="sudo /usr/local/bin/docker"
 TS_DIR="$NAS_DIR/deploy/timescale"

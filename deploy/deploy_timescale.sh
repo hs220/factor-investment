@@ -11,12 +11,12 @@
 # Config via env:
 #   NAS_HOST   ssh target  (default hsheng@192.168.68.70)
 #   NAS_DIR    code dir     (default /volume1/docker/factor-investment)
-#   BRANCH     git branch   (default strategy-b-pipeline)
+#   BRANCH     git branch   (default master)
 set -euo pipefail
 
 NAS_HOST="${NAS_HOST:-hsheng@192.168.68.70}"
 NAS_DIR="${NAS_DIR:-/volume1/docker/factor-investment}"
-BRANCH="${BRANCH:-strategy-b-pipeline}"
+BRANCH="${BRANCH:-master}"
 REPO_URL="${REPO_URL:-git@github.com:hs220/factor-investment.git}"
 DOCKER="sudo /usr/local/bin/docker"
 COMPOSE_DIR="$NAS_DIR/deploy/timescale"
