@@ -14,6 +14,10 @@ x-dagster: &dagster
     DAGSTER_PG_HOST: ${DAGSTER_PG_HOST:-192.168.68.70}
     FACTOR_DB_HOST: ${FACTOR_DB_HOST:-192.168.68.70}
     FACTOR_DB_PORT: ${FACTOR_DB_PORT:-5433}
+  # Persist deployment model artifacts (models/<horizon>/<version>/) across
+  # container rebuilds; the model_predictions asset writes here, inference reads.
+  volumes:
+    - factor-models:/app/models
   restart: unless-stopped
 
 services:
@@ -28,3 +32,6 @@ services:
     <<: *dagster
     container_name: factor-dagster-daemon
     command: ["dagster-daemon", "run", "-w", "workspace.yaml"]
+
+volumes:
+  factor-models:

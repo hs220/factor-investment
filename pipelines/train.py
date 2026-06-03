@@ -4,7 +4,9 @@ Schedulable entry point. Reads the gold ``panel_monthly`` table, runs the
 walk-forward loop (with nested hyperparameter tuning by default) to estimate
 out-of-sample IC, caches the OOS predictions for the backtest stage, then fits a
 **deployment model** on all data through today and saves a versioned artifact
-(``models/<horizon>/<version>/``) that inference reuses without re-training.
+(``models/<horizon>/<version>/``) that inference reuses without re-training. The
+heavy lifting lives in ``src.models.training.train_and_deploy`` — the same code
+the ``model_predictions`` Dagster asset runs.
 
 Requires ``POSTGRES_PASSWORD`` (and ``FACTOR_DB_HOST`` if off-LAN).
 
@@ -18,13 +20,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
 
 from src.config import load_config
 from src.data import cache, warehouse
-from src.factors import evaluate
 from src.factors.panel import _feature_list
-from src.models import artifact, rankers, tuning, walkforward
+from src.models.training import train_and_deploy
 
 
 def main() -> None:
@@ -49,71 +49,34 @@ def main() -> None:
             panel.groupby("date")["target"].transform(lambda s: s.sample(frac=1).values)
         )
 
-    # --- Walk-forward OOS estimate ------------------------------------------
-    if tune:
-        preds = walkforward.walk_forward_predict(
-            panel, features=features, model_name=args.model, tune=True, cfg=mcfg
-        )
-    else:
-        factory = rankers.get_model_factory(args.model)
-        preds = walkforward.walk_forward_predict(panel, factory, features, cfg=mcfg)
-
-    if preds.empty:
+    res = train_and_deploy(
+        panel, features, model_name=args.model, horizon=args.horizon,
+        tune=tune, save_model=not args.shuffle and not args.no_save_model, cfg=mcfg,
+    )
+    if res.oos_preds.empty:
         print("No predictions produced (insufficient data for the walk-forward).")
         return
 
-    ic = evaluate.information_coefficient(preds, "pred", target="forward_return")
-    summary = evaluate.ic_summary(ic)
+    s = res.summary
     print(f"Model: {args.model}{' [SHUFFLED]' if args.shuffle else ''} | "
           f"tuning: {'on' if tune else 'off'}")
-    print(f"  OOS months:   {summary['n_months']}")
-    print(f"  Mean IC:      {summary['ic_mean']:.4f}")
-    print(f"  IC IR:        {summary['ic_ir']:.3f}")
-    print(f"  t-stat:       {summary['t_stat']:.2f}")
-    print(f"  Hit rate:     {summary['hit_rate']:.2%}")
-    if tune and preds.attrs.get("tuning_history"):
-        last = preds.attrs["tuning_history"][-1]
-        print(f"  Re-tuned {len(preds.attrs['tuning_history'])}x; "
-              f"latest params: {last['params']}")
+    print(f"  OOS months:   {s['n_months']}")
+    print(f"  Mean IC:      {s['ic_mean']:.4f}")
+    print(f"  IC IR:        {s['ic_ir']:.3f}")
+    print(f"  t-stat:       {s['t_stat']:.2f}")
+    print(f"  Hit rate:     {s['hit_rate']:.2%}")
+    hist = res.oos_preds.attrs.get("tuning_history")
+    if tune and hist:
+        print(f"  Re-tuned {len(hist)}x; latest params: {hist[-1]['params']}")
 
     if args.shuffle:
         return
 
-    cache.save(preds[["date", "ticker", "gics_sector", "pred", "forward_return",
-                      "market_cap"]], "predictions.parquet")
+    cache.save(res.oos_preds[["date", "ticker", "gics_sector", "pred", "forward_return",
+                              "market_cap"]], "predictions.parquet")
     print("Saved OOS predictions -> data/processed/predictions.parquet")
-
-    if args.no_save_model:
-        return
-
-    # --- Deployment model: fit once on all data, persist for inference -------
-    fit_df = panel.dropna(subset=["target"])
-    if tune:
-        dep_params, inner_ic = tuning.tune(fit_df, args.model, features, cfg=mcfg)
-        print(f"Deployment tuning: inner IC {inner_ic:.4f} | params {dep_params}")
-    else:
-        dep_params = rankers.default_params(mcfg["models"][args.model])
-
-    model = rankers.build_model(args.model, dep_params)
-    model.fit(fit_df[features], fit_df["target"])   # pipeline imputes
-
-    manifest = artifact.Manifest(
-        model_version=artifact.make_version(args.model, args.horizon),
-        model_name=args.model,
-        horizon=args.horizon,
-        feature_list=features,
-        hyperparams=dep_params,
-        normalization=load_config("features")["normalization"]["scheme"],
-        target="target",
-        train_start=str(fit_df["date"].min().date()),
-        train_end=str(fit_df["date"].max().date()),
-        n_train_rows=int(len(fit_df)),
-        oos_metrics={k: float(summary[k]) for k in ("ic_mean", "ic_ir", "t_stat", "hit_rate")},
-        code_sha=artifact._git_sha(),
-        created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-    )
-    dest = artifact.save_artifact(model, manifest)
-    print(f"Saved deployment artifact -> {dest} (version {manifest.model_version})")
+    if res.manifest:
+        print(f"Saved deployment artifact (version {res.manifest.model_version})")
 
 
 if __name__ == "__main__":

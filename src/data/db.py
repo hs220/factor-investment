@@ -336,6 +336,53 @@ def load_panel_monthly(panel: pd.DataFrame) -> int:
     return upsert(df[PANEL_COLUMNS], "panel_monthly", ["date", "ticker"])
 
 
+# Model predictions sink (OOS walk-forward + live), keyed by run/model_version.
+_PREDICTIONS_DDL = """
+CREATE TABLE IF NOT EXISTS predictions (
+    date           date NOT NULL,
+    ticker         text NOT NULL,
+    horizon        text NOT NULL,
+    model_version  text NOT NULL,
+    score          double precision,
+    PRIMARY KEY (date, ticker, horizon, model_version)
+);
+"""
+
+
+def ensure_predictions_table() -> None:
+    """Create the ``predictions`` table (+ hypertable) if absent."""
+    from sqlalchemy import text
+
+    with get_engine().begin() as conn:
+        conn.execute(text(_PREDICTIONS_DDL))
+        # Promote to a Timescale hypertable when the extension is present; harmless
+        # (and skipped) otherwise.
+        conn.execute(text(
+            "SELECT create_hypertable('predictions', 'date', "
+            "chunk_time_interval => INTERVAL '1 year', if_not_exists => TRUE)"
+        ))
+
+
+def load_predictions(preds: pd.DataFrame, horizon: str, model_version: str) -> int:
+    """Upsert model scores -> predictions.
+
+    ``preds`` needs ``date``, ``ticker`` and a score column (``score`` or
+    ``pred``). Rows are stamped with ``horizon`` + ``model_version`` (the run
+    lineage) and upserted on the full key.
+    """
+    if preds.empty:
+        return 0
+    df = preds.rename(columns={"pred": "score"})[["date", "ticker", "score"]].copy()
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    df["horizon"] = horizon
+    df["model_version"] = model_version
+    ensure_predictions_table()
+    return upsert(
+        df[["date", "ticker", "horizon", "model_version", "score"]],
+        "predictions", ["date", "ticker", "horizon", "model_version"],
+    )
+
+
 def set_active(active_tickers: list[str]) -> int:
     """Mark the investable (liquidity-passing) set: is_active=true for the given
     tickers, false for all others. universe_table loads all listed names; this

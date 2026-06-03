@@ -5,6 +5,11 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# libgomp1: OpenMP runtime required by LightGBM (model training asset).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements-orchestration.txt .
 RUN pip install --no-cache-dir -r requirements-orchestration.txt
 

@@ -224,6 +224,42 @@ def panel_monthly_rank_bounds() -> AssetCheckResult:
 
 
 # --------------------------------------------------------------------------- #
+# model_predictions
+# --------------------------------------------------------------------------- #
+@asset_check(asset=assets.model_predictions, description="OOS prediction count not collapsed")
+def predictions_row_count() -> AssetCheckResult:
+    n = _count("SELECT count(*) c FROM predictions")
+    return AssetCheckResult(
+        passed=n >= 50_000, severity=AssetCheckSeverity.ERROR, metadata={"rows": n}
+    )
+
+
+@asset_check(asset=assets.model_predictions,
+             description="latest model's OOS scores positively rank-correlate with forward returns")
+def predictions_ic_positive() -> AssetCheckResult:
+    """Recompute mean per-date IC for the most recent model_version by joining
+    scores to the panel's realized forward returns — the end-to-end skill gate."""
+    df = db.read_sql(
+        """SELECT p.date AS date, p.score AS score, m.forward_return AS fr
+             FROM predictions p
+             JOIN panel_monthly m ON m.date = p.date AND m.ticker = p.ticker
+            WHERE p.model_version = (
+                    SELECT model_version FROM predictions ORDER BY date DESC LIMIT 1)
+              AND m.forward_return IS NOT NULL"""
+    )
+    if df.empty:
+        return AssetCheckResult(passed=False, severity=AssetCheckSeverity.WARN,
+                                metadata={"months": 0})
+    ic = df.groupby("date").apply(
+        lambda g: g["score"].corr(g["fr"], method="spearman"), include_groups=False)
+    mean_ic = float(ic.mean())
+    return AssetCheckResult(
+        passed=mean_ic > 0, severity=AssetCheckSeverity.WARN,
+        metadata={"mean_ic": round(mean_ic, 4), "months": int(ic.notna().sum())},
+    )
+
+
+# --------------------------------------------------------------------------- #
 # ff_factors / macro
 # --------------------------------------------------------------------------- #
 @asset_check(asset=assets.ff_factors, description="FF factors fresh + non-null")
@@ -269,6 +305,8 @@ ALL_CHECKS = [
     panel_monthly_row_count,
     panel_monthly_unique_keys,
     panel_monthly_rank_bounds,
+    predictions_row_count,
+    predictions_ic_positive,
     ff_factors_fresh,
     macro_fresh,
 ]

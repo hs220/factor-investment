@@ -32,6 +32,7 @@ _ALL = [
     assets.ff_factors,
     assets.macro,
     assets.panel_monthly,
+    assets.model_predictions,
 ]
 
 daily_job = define_asset_job(
@@ -44,12 +45,16 @@ monthly_job = define_asset_job(
 # The gold training matrix: rebuild after any ingest stage refreshes. Cheap pure
 # pandas over the warehouse; run monthly with the selection cadence.
 panel_job = define_asset_job("build_panel", selection=["panel_monthly"])
+# Monthly retrain: rebuild the panel, then run the (fixed-config) LightGBM
+# walk-forward -> predictions table + deployment artifact. Tractable on the NAS;
+# a tuned retrain is run off-box.
+model_job = define_asset_job("model_train", selection=["panel_monthly", "model_predictions"])
 
 _TZ = "America/New_York"
 defs = Definitions(
     assets=_ALL,
     asset_checks=ALL_CHECKS,
-    jobs=[daily_job, monthly_job, panel_job],
+    jobs=[daily_job, monthly_job, panel_job, model_job],
     schedules=[
         ScheduleDefinition(
             job=daily_job,
@@ -60,6 +65,12 @@ defs = Definitions(
         ScheduleDefinition(
             job=monthly_job,
             cron_schedule="0 6 5 * *",            # 5th of month 6am ET
+            execution_timezone=_TZ,
+            default_status=DefaultScheduleStatus.RUNNING,
+        ),
+        ScheduleDefinition(
+            job=model_job,
+            cron_schedule="0 7 6 * *",            # 6th of month 7am ET (after ingest)
             execution_timezone=_TZ,
             default_status=DefaultScheduleStatus.RUNNING,
         ),

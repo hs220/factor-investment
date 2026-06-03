@@ -11,7 +11,7 @@ import pandas as pd
 from dagster import Backoff, RetryPolicy, asset
 
 from src.config import load_config
-from src.data import db, factors, fundamentals, prices, universe
+from src.data import db, factors, fundamentals, prices, universe, warehouse
 
 # Transient external sources (FRED/yfinance/EDGAR) self-heal via step retry.
 _RETRY = RetryPolicy(max_retries=3, delay=30, backoff=Backoff.EXPONENTIAL)
@@ -172,4 +172,38 @@ def panel_monthly(context) -> None:
         "tickers": int(panel["ticker"].nunique()),
         "dates": int(panel["date"].nunique()),
         "sectors": int(panel["gics_sector"].nunique()),
+    })
+
+
+@asset(group_name="model", deps=[panel_monthly], compute_kind="lightgbm")
+def model_predictions(context) -> None:
+    """Walk-forward OOS scores -> predictions, + a deployment model artifact.
+
+    Reads ``panel_monthly``, runs the (fixed-config) LightGBM walk-forward to
+    produce out-of-sample scores, writes them to the ``predictions`` table keyed
+    by the run's ``model_version``, and fits + persists a deployment model
+    artifact (``models/1m/<version>/``) for inference. Same code path as
+    ``pipelines/train.py`` (tuning off here — it's too heavy for the NAS; run a
+    tuned retrain off-box). The OOS IC is surfaced as asset metadata.
+    """
+    from src.factors.panel import _feature_list
+    from src.models.training import train_and_deploy
+
+    panel = warehouse.load_panel_monthly()
+    res = train_and_deploy(
+        panel, _feature_list(), model_name="lightgbm", horizon="1m",
+        tune=False, save_model=True,
+    )
+    if res.oos_preds.empty or res.manifest is None:
+        raise Exception("training produced no predictions / no deployment model")
+
+    version = res.manifest.model_version
+    n = db.load_predictions(res.oos_preds, horizon="1m", model_version=version)
+    context.add_output_metadata({
+        "model_version": version,
+        "predictions_rows": n,
+        "oos_ic_mean": round(res.summary["ic_mean"], 4),
+        "oos_ic_ir": round(res.summary["ic_ir"], 3),
+        "oos_t_stat": round(res.summary["t_stat"], 2),
+        "oos_months": int(res.summary["n_months"]),
     })
