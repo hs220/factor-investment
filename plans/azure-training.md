@@ -1,5 +1,11 @@
 # Plan: Azure Burst Training (offload heavy model training)
 
+> **Status: FALLBACK.** The chosen approach is local — NAS Dagster dispatching to
+> the home GPU desktop via remote Docker (`plans/local-training.md`), which keeps
+> everything on the LAN and avoids the DB-migration / Blob round-trip below. Keep
+> this plan for the day we need cloud scale, always-on availability, or compute
+> beyond the desktop.
+
 ## Why
 The NAS cannot run the LightGBM walk-forward in-process: the fits saturate its
 cores and starve Dagster's gRPC heartbeat (run killed after ~73 min, zero
