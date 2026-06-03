@@ -184,6 +184,46 @@ def fundamental_features_unique_keys() -> AssetCheckResult:
 
 
 # --------------------------------------------------------------------------- #
+# panel_monthly (gold training matrix)
+# --------------------------------------------------------------------------- #
+@asset_check(asset=assets.panel_monthly, description="row count not collapsed (partial build)")
+def panel_monthly_row_count() -> AssetCheckResult:
+    n = _count("SELECT count(*) c FROM panel_monthly")
+    return AssetCheckResult(
+        passed=n >= 500_000, severity=AssetCheckSeverity.ERROR, metadata={"rows": n}
+    )
+
+
+@asset_check(asset=assets.panel_monthly, description="no duplicate (date, ticker)")
+def panel_monthly_unique_keys() -> AssetCheckResult:
+    dups = _count(
+        """SELECT count(*) c FROM (
+             SELECT 1 FROM panel_monthly GROUP BY date, ticker HAVING count(*) > 1
+           ) t"""
+    )
+    return AssetCheckResult(
+        passed=dups == 0, severity=AssetCheckSeverity.ERROR, metadata={"dup_keys": dups}
+    )
+
+
+@asset_check(asset=assets.panel_monthly,
+             description="normalized features + target are cross-sectional ranks in [0,1]")
+def panel_monthly_rank_bounds() -> AssetCheckResult:
+    """Rank-normalized columns must lie in [0,1] (ignore NULLs). A value outside
+    that band means normalization broke or a raw level leaked into the panel."""
+    bad = _count(
+        """SELECT count(*) c FROM panel_monthly WHERE
+              (roe           IS NOT NULL AND (roe           < 0 OR roe           > 1.0001))
+           OR (momentum_12_2 IS NOT NULL AND (momentum_12_2 < 0 OR momentum_12_2 > 1.0001))
+           OR (book_to_price IS NOT NULL AND (book_to_price < 0 OR book_to_price > 1.0001))
+           OR (target        IS NOT NULL AND (target        < 0 OR target        > 1.0001))"""
+    )
+    return AssetCheckResult(
+        passed=bad == 0, severity=AssetCheckSeverity.ERROR, metadata={"out_of_range_rows": bad}
+    )
+
+
+# --------------------------------------------------------------------------- #
 # ff_factors / macro
 # --------------------------------------------------------------------------- #
 @asset_check(asset=assets.ff_factors, description="FF factors fresh + non-null")
@@ -226,6 +266,9 @@ ALL_CHECKS = [
     fundamental_features_no_lookahead,
     fundamental_features_row_count,
     fundamental_features_unique_keys,
+    panel_monthly_row_count,
+    panel_monthly_unique_keys,
+    panel_monthly_rank_bounds,
     ff_factors_fresh,
     macro_fresh,
 ]

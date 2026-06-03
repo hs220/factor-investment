@@ -273,6 +273,69 @@ def load_fundamental_features(features: pd.DataFrame) -> int:
     return upsert(df, "fundamental_features", ["ticker", "period_end"])
 
 
+# Gold training matrix — the assembled (ticker, month) feature panel. Columns
+# must stay in sync with src/factors/panel.assemble_panel's output.
+PANEL_COLUMNS = [
+    "date", "ticker", "gics_sector", "forward_return", "market_cap",
+    "momentum_12_2", "momentum_6_1", "volatility_12m", "size_log_mktcap",
+    "earnings_yield", "book_to_price", "ev_ebitda_inv",
+    "roe", "gross_margin", "profit_margin", "accruals",
+    "revenue_growth_yoy", "asset_growth_yoy",
+    "yield_curve", "vix", "credit_spread", "target",
+]
+
+_PANEL_DDL = """
+CREATE TABLE IF NOT EXISTS panel_monthly (
+    date                date NOT NULL,
+    ticker              text NOT NULL,
+    gics_sector         text,
+    forward_return      double precision,
+    market_cap          double precision,
+    momentum_12_2       double precision,
+    momentum_6_1        double precision,
+    volatility_12m      double precision,
+    size_log_mktcap     double precision,
+    earnings_yield      double precision,
+    book_to_price       double precision,
+    ev_ebitda_inv       double precision,
+    roe                 double precision,
+    gross_margin        double precision,
+    profit_margin       double precision,
+    accruals            double precision,
+    revenue_growth_yoy  double precision,
+    asset_growth_yoy    double precision,
+    yield_curve         double precision,
+    vix                 double precision,
+    credit_spread       double precision,
+    target              double precision,
+    PRIMARY KEY (date, ticker)
+);
+CREATE INDEX IF NOT EXISTS idx_panel_date ON panel_monthly (date);
+"""
+
+
+def ensure_panel_monthly_table() -> None:
+    """Create the gold ``panel_monthly`` table + index if absent."""
+    from sqlalchemy import text
+
+    with get_engine().begin() as conn:
+        for stmt in filter(str.strip, _PANEL_DDL.split(";")):
+            conn.execute(text(stmt))
+
+
+def load_panel_monthly(panel: pd.DataFrame) -> int:
+    """Upsert the assembled monthly feature panel -> panel_monthly (gold)."""
+    if panel.empty:
+        return 0
+    missing = [c for c in PANEL_COLUMNS if c not in panel.columns]
+    if missing:
+        raise ValueError(f"panel missing expected columns: {missing}")
+    df = panel.copy()
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    ensure_panel_monthly_table()
+    return upsert(df[PANEL_COLUMNS], "panel_monthly", ["date", "ticker"])
+
+
 def set_active(active_tickers: list[str]) -> int:
     """Mark the investable (liquidity-passing) set: is_active=true for the given
     tickers, false for all others. universe_table loads all listed names; this

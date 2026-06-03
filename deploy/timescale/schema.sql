@@ -120,6 +120,46 @@ CREATE TABLE IF NOT EXISTS macro (
 );
 
 -- ---------------------------------------------------------------------------
+-- panel_monthly: GOLD training matrix. One row per (ticker, month-end) with the
+-- normalized, sector-neutral feature set + forward-return target. Materialized
+-- by the panel_monthly Dagster asset from prices + fundamental_features + macro
+-- + universe sectors (src/factors/panel.assemble_panel). The model stage reads
+-- this directly instead of recomputing the panel.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS panel_monthly (
+    date                date             NOT NULL,
+    ticker              text             NOT NULL,
+    gics_sector         text,
+    forward_return      double precision,
+    market_cap          double precision,
+    -- price / technical
+    momentum_12_2       double precision,
+    momentum_6_1        double precision,
+    volatility_12m      double precision,
+    size_log_mktcap     double precision,
+    -- value
+    earnings_yield      double precision,
+    book_to_price       double precision,
+    ev_ebitda_inv       double precision,
+    -- quality
+    roe                 double precision,
+    gross_margin        double precision,
+    profit_margin       double precision,
+    accruals            double precision,
+    -- growth
+    revenue_growth_yoy  double precision,
+    asset_growth_yoy    double precision,
+    -- macro regime
+    yield_curve         double precision,
+    vix                 double precision,
+    credit_spread       double precision,
+    -- target: within-sector forward-return rank
+    target              double precision,
+    PRIMARY KEY (date, ticker)
+);
+CREATE INDEX IF NOT EXISTS idx_panel_date ON panel_monthly (date);
+
+-- ---------------------------------------------------------------------------
 -- Model outputs: OOS predictions per horizon (hypertable) and portfolios.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS predictions (

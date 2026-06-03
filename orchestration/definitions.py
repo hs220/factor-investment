@@ -31,6 +31,7 @@ _ALL = [
     assets.fundamental_features,
     assets.ff_factors,
     assets.macro,
+    assets.panel_monthly,
 ]
 
 daily_job = define_asset_job(
@@ -40,12 +41,15 @@ daily_job = define_asset_job(
 monthly_job = define_asset_job(
     "monthly_ingest", selection=["universe_table", "ff_factors", "macro", "sectors"]
 )
+# The gold training matrix: rebuild after any ingest stage refreshes. Cheap pure
+# pandas over the warehouse; run monthly with the selection cadence.
+panel_job = define_asset_job("build_panel", selection=["panel_monthly"])
 
 _TZ = "America/New_York"
 defs = Definitions(
     assets=_ALL,
     asset_checks=ALL_CHECKS,
-    jobs=[daily_job, monthly_job],
+    jobs=[daily_job, monthly_job, panel_job],
     schedules=[
         ScheduleDefinition(
             job=daily_job,

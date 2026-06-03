@@ -147,3 +147,29 @@ def macro(context) -> None:
     start, end = _date_range()
     n = db.load_macro(factors.load_macro(start, end))
     context.add_output_metadata({"rows": n})
+
+
+@asset(
+    group_name="features",
+    deps=[prices_table, fundamental_features, macro, sectors],
+    compute_kind="pandas",
+)
+def panel_monthly(context) -> None:
+    """Assembled (ticker, month) feature panel -> panel_monthly (gold).
+
+    The training matrix: PIT-joined fundamentals + price/technical + macro
+    features, cross-sectionally rank-normalized within sector, plus the
+    within-sector forward-return rank target. Pure pandas over the warehouse via
+    src.factors.panel.assemble_panel(source="db") — the same code the notebook
+    and model stage use, so there is one feature definition for train and serve.
+    """
+    from src.factors.panel import assemble_panel
+
+    panel = assemble_panel(source="db")
+    n = db.load_panel_monthly(panel)
+    context.add_output_metadata({
+        "rows": n,
+        "tickers": int(panel["ticker"].nunique()),
+        "dates": int(panel["date"].nunique()),
+        "sectors": int(panel["gics_sector"].nunique()),
+    })
