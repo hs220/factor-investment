@@ -17,11 +17,8 @@ from __future__ import annotations
 
 import argparse
 
-import pandas as pd
-
 from src.config import load_config
-from src.data import warehouse
-from src.models import artifact
+from src.serving.recommend import latest_recommendations
 
 
 def main() -> None:
@@ -32,23 +29,14 @@ def main() -> None:
     ap.add_argument("--top", type=int, default=0, help="top-N to show (default: config n_holdings)")
     args = ap.parse_args()
 
-    panel = warehouse.load_panel_monthly()
-    asof = pd.Timestamp(args.date) if args.date else panel["date"].max()
-    cross = panel[panel["date"] == asof].copy()
-    if cross.empty:
-        raise SystemExit(f"no panel rows for {asof.date()}")
-
-    model, manifest = artifact.load_artifact(args.horizon, args.version)
-    cross["pred"] = artifact.predict_with_artifact(cross, args.horizon, version=args.version)
+    ranked, manifest, asof = latest_recommendations(
+        horizon=args.horizon, version=args.version, asof=args.date)
 
     top = args.top or load_config("model")["portfolio"]["n_holdings"]
-    ranked = cross.sort_values("pred", ascending=False)
-
     print(f"As-of {asof.date()} | model {manifest.model_version} "
-          f"(trained {manifest.train_start}..{manifest.train_end}) | {len(cross)} names")
+          f"(trained {manifest.train_start}..{manifest.train_end}) | {len(ranked)} names")
     print(f"\nTop {top} by predicted rank:")
-    cols = ["ticker", "gics_sector", "pred"]
-    print(ranked[cols].head(top).to_string(index=False))
+    print(ranked[["ticker", "gics_sector", "pred"]].head(top).to_string(index=False))
 
 
 if __name__ == "__main__":

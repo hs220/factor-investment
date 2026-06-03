@@ -1,0 +1,15 @@
+# Streamlit dashboard image deps: the src/ runtime + Streamlit + Plotly.
+streamlit>=1.36
+plotly>=5.20
+pandas>=2.0
+numpy>=1.24
+scipy>=1.11
+sqlalchemy>=2.0
+psycopg2-binary>=2.9
+pyarrow>=14.0
+pyyaml>=6.0
+# Needed to load + score the deployment artifact (the model is a sklearn Pipeline
+# wrapping LightGBM) on the Recommendations page.
+scikit-learn>=1.4
+lightgbm>=4.0
+joblib>=1.3
