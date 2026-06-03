@@ -56,6 +56,17 @@ def load_macro() -> pd.DataFrame:
     return df.set_index("date").sort_index()
 
 
+def load_panel_monthly() -> pd.DataFrame:
+    """The gold (ticker, month) training matrix, ``date`` as datetime64[ns].
+
+    Same shape ``panel.assemble_panel`` produces; the model/EDA stages read this
+    instead of recomputing the panel or loading panel.parquet.
+    """
+    df = db.read_sql("SELECT * FROM panel_monthly")
+    df["date"] = pd.to_datetime(df["date"])
+    return df.sort_values(["date", "ticker"]).reset_index(drop=True)
+
+
 def load_sectors() -> pd.DataFrame:
     """Investable ticker -> gics_sector (the universe table), junk coerced to NaN."""
     df = db.read_sql("SELECT ticker, gics_sector FROM universe WHERE is_active")
