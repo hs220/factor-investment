@@ -74,6 +74,42 @@ before the notebook has been reviewed.**
 Rule of thumb: **notebook = the reviewable prototype + report; pipeline/asset =
 the productionized, scheduled, checked version of the same `src/` logic.**
 
+### Modeling: sklearn components for standard ops; inference-time parity
+Any transform that **fits parameters on the training data and is applied per
+sample** — imputation fills, scaler means/σ, encoder vocabularies, binning edges
+— must use the corresponding **sklearn component** (`SimpleImputer`,
+`StandardScaler`, `OneHotEncoder`, …) **bundled into the estimator via an sklearn
+`Pipeline`** (`ColumnTransformer` for per-column ops). Never hand-roll these as
+ad-hoc DataFrame calls (`df.fillna(...)`, `pd.get_dummies`, inline z-scores) in
+the training code.
+
+**Why:** the *fitted* transform is then serialized *inside the model artifact* and
+replayed identically at inference — training-serving skew is eliminated by
+construction. `Pipeline` works with LightGBM/XGBoost (both sklearn-compatible).
+The factories in `src/models/rankers.py` return such pipelines; training and
+inference pass **raw** feature columns. See `plans/architecture.md`
+"Training vs. Inference".
+
+**Three categories — know which bucket a step is in:**
+1. **Fitted, per-sample preprocessing** (imputation, scaling, encoding) → **in the
+   model `Pipeline`** (travels in the artifact). It learns from the training
+   distribution, so it *must* be carried to serve.
+2. **Stateless, cross-sectional normalization** — our rank / z-score **within each
+   date** (`src/factors/normalize.py`). It fits *nothing* from history (a stock's
+   rank comes only from that date's cross-section) and is a cross-row groupby, not
+   a per-sample op — so it does **not** go in the Pipeline. Parity instead comes
+   from living in the single shared `assemble_panel` path that both training and
+   inference call. ⚠️ If normalization ever switches to a statistic fitted on the
+   *training set* (global z-score, fitted quantile bins), it becomes category 1 and
+   must move into the artifact.
+3. **Domain feature engineering** — a `fillna(0)` encoding a real fact (missing
+   debt component = 0 in an EV sum; missing monthly return = 0 contribution).
+   Correct domain logic; stays in `src/factors` / `src/backtest`.
+
+The line between 1 and 3: if a step *normalizes/learns the feature distribution*
+for the model it is preprocessing (Pipeline); if it *constructs the feature's
+economic value* it is feature engineering.
+
 ## Tech Stack
 
 ### Active

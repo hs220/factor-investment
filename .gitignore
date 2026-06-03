@@ -25,3 +25,6 @@ venv/
 .env
 deploy/timescale/.env
 config/db.local.yaml
+
+# Trained model artifacts (deployment models + manifests)
+/models/

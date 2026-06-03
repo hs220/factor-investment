@@ -6,19 +6,35 @@ walk_forward:
   test_months: 1              # predict one month, then step forward
   embargo_months: 1           # gap between train end and test to prevent leakage
 
+# Hyperparameter tuning (nested walk-forward). Any model param below given as a
+# LIST is a search candidate; scalars are fixed. The grid is the cartesian product
+# of the list-valued params. When tuning.enabled is false, the FIRST element of
+# each list is used (the default). Tuning runs on inner time-ordered splits of each
+# outer training window (so it stays causal/leak-free) and is re-run every
+# `retune_every` folds, holding the chosen params fixed in between.
+tuning:
+  enabled: true
+  search: "grid"               # grid over the param lists below
+  retune_every: 12             # re-tune every N outer folds (months); reuse between
+  inner_splits: 3              # inner expanding-window validation folds (tail of train)
+  inner_embargo_months: 1
+  inner_min_train_months: 24   # skip tuning until the window is at least this long
+  scoring: "ic"                # maximize mean inner-validation IC vs forward_return
+
 models:
-  # Baseline first, then tree models (per build sequence)
+  # Baseline first, then tree models (per build sequence).
+  # List-valued params are tuned; scalars are fixed (see `tuning` above).
   elasticnet:
     enabled: true
-    alpha: 0.001
-    l1_ratio: 0.5
+    alpha: [0.0001, 0.001, 0.01]
+    l1_ratio: [0.2, 0.5, 0.8]
 
   lightgbm:
     enabled: true
     objective: "regression"    # switch to "lambdarank" for learning-to-rank
-    n_estimators: 500
-    learning_rate: 0.02
-    num_leaves: 31
+    n_estimators: [300, 500]
+    learning_rate: [0.02, 0.05]
+    num_leaves: [31, 63]
     max_depth: -1
     subsample: 0.8
     colsample_bytree: 0.8
@@ -28,9 +44,9 @@ models:
   xgboost:
     enabled: false             # alternative to lightgbm
     objective: "reg:squarederror"
-    n_estimators: 500
-    learning_rate: 0.02
-    max_depth: 5
+    n_estimators: [300, 500]
+    learning_rate: [0.02, 0.05]
+    max_depth: [4, 6]
     subsample: 0.8
     colsample_bytree: 0.8
 

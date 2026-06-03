@@ -43,21 +43,32 @@ def expanding_splits(
 
 def walk_forward_predict(
     panel: pd.DataFrame,
-    make_model: Callable[[], object],
-    features: list[str],
+    make_model: Callable[[], object] | None = None,
+    features: list[str] | None = None,
     *,
     target: str = "target",
     date_col: str = "date",
     min_names_per_fold: int = 20,
-    impute: float = 0.5,
     cfg: dict | None = None,
+    model_name: str | None = None,
+    tune: bool = False,
 ) -> pd.DataFrame:
     """Run the walk-forward loop and return test rows with a ``pred`` column.
 
-    Features are rank-normalized in [0,1]; missing values are imputed to a
-    neutral ``impute`` (0.5) so linear models work and tree models stay robust.
+    Missing features are imputed inside the model pipeline (``src.models.rankers``
+    bundles a SimpleImputer with each estimator), so the same imputation is used
+    at train and inference — calling code passes raw feature columns.
+
+    Two modes:
+    - **fixed** (default): pass ``make_model`` (a zero-arg factory); the same
+      estimator spec is fit on each expanding window.
+    - **tuned** (``tune=True`` + ``model_name``): each fold's hyperparameters are
+      chosen by nested inner-CV on the training window (``src.models.tuning``),
+      re-tuned every ``cfg["tuning"]["retune_every"]`` folds. The per-fold chosen
+      params are recorded on the result's ``.attrs["tuning_history"]``.
     """
-    wf = (cfg or load_config("model"))["walk_forward"]
+    cfg = cfg or load_config("model")
+    wf = cfg["walk_forward"]
     splits = expanding_splits(
         panel[date_col],
         min_train_months=wf["min_train_months"],
@@ -65,22 +76,45 @@ def walk_forward_predict(
         embargo_months=wf["embargo_months"],
     )
 
-    out_frames = []
-    for train_dates, test_dates in splits:
+    if tune:
+        if model_name is None:
+            raise ValueError("tune=True requires model_name")
+        from src.models import rankers, tuning  # lazy: avoid import cycle
+        retune_every = int(cfg["tuning"].get("retune_every", 1))
+    elif make_model is None:
+        raise ValueError("provide make_model, or tune=True with model_name")
+
+    out_frames: list[pd.DataFrame] = []
+    tuning_history: list[dict] = []
+    cur_params: dict | None = None
+
+    for i, (train_dates, test_dates) in enumerate(splits):
         tr = panel[panel[date_col].isin(train_dates)].dropna(subset=[target])
         te = panel[panel[date_col].isin(test_dates)]
         if len(tr) < min_names_per_fold or te.empty:
             continue
 
-        x_tr = tr[features].fillna(impute)
-        x_te = te[features].fillna(impute)
-        model = make_model()
-        model.fit(x_tr, tr[target])
+        if tune:
+            if cur_params is None or i % retune_every == 0:
+                cur_params, score = tuning.tune(
+                    tr, model_name, features, cfg=cfg,
+                    target=target, date_col=date_col,
+                )
+                tuning_history.append(
+                    {"date": str(pd.Timestamp(test_dates[0]).date()),
+                     "params": cur_params, "inner_ic": score}
+                )
+            model = rankers.build_model(model_name, cur_params)
+        else:
+            model = make_model()
 
+        model.fit(tr[features], tr[target])   # pipeline imputes
         te = te.copy()
-        te["pred"] = model.predict(x_te)
+        te["pred"] = model.predict(te[features])
         out_frames.append(te)
 
     if not out_frames:
         return pd.DataFrame()
-    return pd.concat(out_frames, ignore_index=True)
+    result = pd.concat(out_frames, ignore_index=True)
+    result.attrs["tuning_history"] = tuning_history
+    return result

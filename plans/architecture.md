@@ -91,17 +91,29 @@ path, with the differences between modes isolated to the edges.
    `predict(model, features) -> scores` (in `src/models/rankers.py`) so the live
    path reuses `predict` directly.
 
-### Model artifact + registry (to build — currently missing)
-`pipelines/train.py` only emits OOS predictions to parquet; no deployable model is
-persisted. Add:
-- After walk-forward *validation*, fit a **deployment model** on all data through
-  `as_of` and persist a versioned **artifact** = fitted estimator + manifest:
-  `model_version, horizon, feature_list, normalization_scheme, train_window,
-  code_sha, created_at`.
-- Inference loads the latest artifact for a horizon and **asserts the live feature
-  set matches the manifest `feature_list`** (the explicit skew guard).
-- Artifacts in a gitignored `models/` dir and/or a `model_registry` table;
-  referenced by `model_version` (already a `predictions` key).
+### Hyperparameter tuning (nested walk-forward) — built
+`config/model.yaml` model params may be **lists** (tuning candidates) or scalars
+(fixed); `config/model.yaml::tuning` controls the search. Each outer fold tunes
+**inside** its training window via inner time-ordered validation splits
+(`src/models/tuning.py`), maximizing inner-validation IC, so the outer test block
+is never seen — tuning stays causal. Re-tuned every `retune_every` folds (default
+12) to bound cost. `walk_forward_predict(tune=True, model_name=...)` records the
+per-fold chosen params on `result.attrs["tuning_history"]`.
+
+### Model artifact + registry — built
+`pipelines/train.py` now, after walk-forward *validation*, tunes on all data and
+fits a **deployment model** on every row through `as_of`, persisting a versioned
+**artifact** (`src/models/artifact.py`) under a gitignored `models/<horizon>/
+<model_version>/`:
+- `model.joblib` — the fitted estimator (joblib; uniform across model types).
+- `manifest.json` — `model_version, model_name, horizon, feature_list,
+  hyperparams, normalization, target, train_window, n_train_rows, oos_metrics,
+  code_sha, created_at`. `models/<horizon>/latest.txt` points at the newest.
+- `pipelines/predict.py` loads the latest artifact, **asserts the live feature set
+  covers the manifest `feature_list`** (`predict_with_artifact` — the explicit
+  skew guard), and scores the latest cross-section without re-training.
+- A `model_registry` table is still optional; the filesystem `latest.txt` pointer
+  plus the `predictions.model_version` key suffice for now.
 
 ### Unified predictions sink
 Walk-forward OOS predictions (historical) and live predictions (latest) have the
