@@ -26,7 +26,9 @@ from pathlib import Path
 
 import pandas as pd
 
-MODELS_DIR = Path("models")
+# Repo-root-anchored so artifacts always land in <repo>/models/ regardless of the
+# caller's working directory (train.py runs from the root; notebooks from notebooks/).
+MODELS_DIR = Path(__file__).resolve().parents[2] / "models"
 
 
 @dataclass
