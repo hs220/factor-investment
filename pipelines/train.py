@@ -1,8 +1,10 @@
 """Train cross-sectional ranking models with walk-forward validation.
 
-Schedulable entry point: assembles the panel, runs the walk-forward loop for the
-configured model, reports out-of-sample IC, and caches the OOS predictions for
-the backtest stage.
+Schedulable entry point: reads the gold ``panel_monthly`` table from the
+warehouse, runs the walk-forward loop for the configured model, reports
+out-of-sample IC, and caches the OOS predictions for the backtest stage.
+
+Requires ``POSTGRES_PASSWORD`` (and ``FACTOR_DB_HOST`` if off-LAN).
 
 Usage:
     python -m pipelines.train                 # model from config (default lightgbm)
@@ -16,7 +18,7 @@ import argparse
 import numpy as np
 
 from src.config import load_config
-from src.data import cache
+from src.data import cache, warehouse
 from src.factors import evaluate
 from src.factors.panel import _feature_list
 from src.models import rankers, walkforward
@@ -28,7 +30,7 @@ def main() -> None:
     ap.add_argument("--shuffle", action="store_true", help="shuffle target (leakage test)")
     args = ap.parse_args()
 
-    panel = cache.load("panel.parquet")
+    panel = warehouse.load_panel_monthly()
     features = _feature_list()
 
     if args.shuffle:
