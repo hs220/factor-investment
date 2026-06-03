@@ -72,7 +72,10 @@ defs = Definitions(
             job=model_job,
             cron_schedule="0 7 6 * *",            # 6th of month 7am ET (after ingest)
             execution_timezone=_TZ,
-            default_status=DefaultScheduleStatus.RUNNING,
+            # STOPPED: LightGBM training is too heavy for the NAS (starves the
+            # Dagster heartbeat / OOM). Heavy training is offloaded to Azure burst
+            # (see plans/azure-training.md); trigger model_train manually meanwhile.
+            default_status=DefaultScheduleStatus.STOPPED,
         ),
     ],
 )
