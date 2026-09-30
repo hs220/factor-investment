@@ -8,6 +8,22 @@ removes Azure's whole networking problem (no DB migration, no Blob round-trip), 
 nothing, and the GPU unlocks the future torch/deep-learning roadmap. Azure stays the
 cloud fallback (`plans/azure-training.md`).
 
+## Update 2026-09-30 — training host is now a Linux box, Phase 0 passed
+The burst-training host is a dedicated **Linux mini PC** (`192.168.68.76`, HP ProDesk
+600 G4 DM, i5-8500T 6c, 16 GB, Debian 13, Docker 29) instead of the Windows desktop —
+so the WSL2 / Windows OpenSSH / Fast-Startup steps below no longer apply (native Docker,
+SSH key auth already works). It has **no NVIDIA GPU**: the torch phase still needs the
+3070 or Azure. The box also hosts another project whose firewall blocks all traffic to
+the NAS; a single ufw exception allows `tcp 192.168.68.70:5433` (Postgres) only.
+
+**Phase 0 result** (`python -m pipelines.train --model lightgbm`, nested tuning on,
+against the NAS warehouse): **42m56s wall**, 14,351 s CPU (~5.6 of 6 cores busy),
+**peak RSS 1.86 GB**, CPU ≤ 76 °C at ~30 W. 279 OOS months, mean IC 0.0286, IC IR 0.412,
+t-stat 6.89, hit rate 70.6%, re-tuned 24×. Deployment artifact ~0.9 MB (joblib) — fine
+as a `model_registry` `bytea`. The NAS never finished this job (killed after ~73 min).
+Caveat: the first attempt hard-powered-off the box ~1 min in with nothing logged; CPU and
+AVX2 stress tests plus the 43-min rerun were then clean — watch for recurrence.
+
 ## Decision (locked with user)
 Keep **Dagster + Postgres on the NAS** as orchestrator + warehouse. The heavy
 training step runs in a **Docker container on the desktop**, launched by Dagster via
