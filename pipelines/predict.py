@@ -6,12 +6,15 @@ horizon, assert the live features match the model's manifest (train/serve skew
 guard), predict, and emit the ranked recommendations. Reuses the *exact* feature
 matrix and ``predict`` path used in training — the model is loaded, never refit.
 
-Requires ``POSTGRES_PASSWORD`` (and ``FACTOR_DB_HOST`` if off-LAN).
+Requires ``POSTGRES_PASSWORD`` (and ``FACTOR_DB_HOST`` if off-LAN). The model
+comes from ``--store`` (default ``$FACTOR_MODEL_STORE``, else the local ``models/``
+dir); ``db`` reads the ``model_registry`` table the training box writes to.
 
 Usage:
     python -m pipelines.predict                  # latest month, latest 1m model
     python -m pipelines.predict --horizon 1m --top 30
     python -m pipelines.predict --date 2026-05-31
+    python -m pipelines.predict --store db       # model from model_registry
 """
 from __future__ import annotations
 
@@ -26,11 +29,13 @@ def main() -> None:
     ap.add_argument("--horizon", default="1m", help="model horizon to load")
     ap.add_argument("--version", default="latest", help="artifact version (default latest)")
     ap.add_argument("--date", default=None, help="cross-section month-end (default: latest)")
+    ap.add_argument("--store", default=None, choices=["fs", "db"],
+                    help="artifact store (default: $FACTOR_MODEL_STORE, else fs)")
     ap.add_argument("--top", type=int, default=0, help="top-N to show (default: config n_holdings)")
     args = ap.parse_args()
 
     ranked, manifest, asof = latest_recommendations(
-        horizon=args.horizon, version=args.version, asof=args.date)
+        horizon=args.horizon, version=args.version, asof=args.date, store=args.store)
 
     top = args.top or load_config("model")["portfolio"]["n_holdings"]
     print(f"As-of {asof.date()} | model {manifest.model_version} "

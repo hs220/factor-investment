@@ -24,6 +24,21 @@ as a `model_registry` `bytea`. The NAS never finished this job (killed after ~73
 Caveat: the first attempt hard-powered-off the box ~1 min in with nothing logged; CPU and
 AVX2 stress tests plus the 43-min rerun were then clean — watch for recurrence.
 
+**Phase 1 result (2026-09-30, commit `7067941`) — done.** `model_registry` table +
+`store="db"` in `src/models/artifact.py` (`$FACTOR_MODEL_STORE`, default fs);
+`orchestration/train_entrypoint.py` (Pipes-aware, plain stdout when run by hand);
+`deploy/train/{Dockerfile,build.sh,run.sh}`; `constraints-ml.txt` pins the ML stack to
+the NAS image's versions (py3.12, sklearn 1.9.0, lightgbm 4.6.0, joblib 1.5.3, numpy
+2.4.6, pandas 3.0.3) and both images install with it. Containerized run on the box:
+**43m48s**, exit 0, registered `lightgbm-1m-20261001032715` (0.94 MB) and 1,130,640
+`predictions` rows (2003-03..2026-06); metrics identical to the Phase-0 venv run. The
+**NAS `factor-dagster` container unpickled the registry artifact and scored the
+2026-06-30 cross-section** (4,038 names), and `latest_recommendations(store="db")`
+returns the same scores — so serving off the registry works. The container runs with
+`--network host` so the ufw D12 rules still apply (bridge traffic would bypass them).
+Not yet done (Phase 2): the in-process `model_predictions` asset still trains on the NAS
+with the fs store; the dashboard/NAS must set `FACTOR_MODEL_STORE=db` when deployed.
+
 ## Decision (locked with user)
 Keep **Dagster + Postgres on the NAS** as orchestrator + warehouse. The heavy
 training step runs in a **Docker container on the desktop**, launched by Dagster via

@@ -3,6 +3,9 @@
 All real logic lives in ``src/`` (warehouse readers, recommendations, IC
 evaluation); Streamlit only caches the reads so interactions don't re-query the
 warehouse or re-score the model. Pages import these helpers and render.
+
+The deployed model is read from ``$FACTOR_MODEL_STORE`` — set ``db`` to serve the
+artifact the training box registered in ``model_registry`` (default: local fs).
 """
 from __future__ import annotations
 
