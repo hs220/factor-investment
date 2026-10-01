@@ -66,7 +66,7 @@ for col, color in (("Strategy (net)", STRATEGY), ("Benchmark", BENCHMARK)):
                        showarrow=False, xanchor="left", xshift=6, font={"size": 12})
 fig.update_layout(title="Growth of $1 (log scale)", yaxis_type="log", hovermode="x unified",
                   height=420, margin={"r": 170}, legend={"orientation": "h", "y": 1.08})
-st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(fig, width="stretch")
 
 # --- Drawdown (its own chart, same units) -------------------------------------
 dd = go.Figure()
@@ -74,7 +74,7 @@ _line(dd, metrics.drawdown(bt["net"]), "Strategy (net)", STRATEGY)
 _line(dd, metrics.drawdown(bt["benchmark"]), "Benchmark", BENCHMARK)
 dd.update_layout(title="Drawdown", yaxis_tickformat=".0%", hovermode="x unified",
                  height=300, legend={"orientation": "h", "y": 1.12})
-st.plotly_chart(dd, use_container_width=True)
+st.plotly_chart(dd, width="stretch")
 
 # --- Attribution + summary table ----------------------------------------------
 left, right = st.columns(2)
@@ -84,7 +84,7 @@ with left:
         st.info(attr["error"])
     else:
         st.dataframe(pd.DataFrame({"beta": attr["betas"], "t-stat": attr["beta_tstats"]}).round(2),
-                     use_container_width=True)
+                     width="stretch")
         st.caption(f"R² {attr['r_squared']:.2f} over {attr['n_months']} months. Alpha is the "
                    "return the factors don't explain.")
 with right:
@@ -92,11 +92,11 @@ with right:
     keys = ["ann_return", "ann_vol", "sharpe", "sortino", "max_drawdown", "hit_rate"]
     st.dataframe(pd.DataFrame({"strategy (net)": [s.get(k) for k in keys],
                                "benchmark": [b.get(k) for k in keys]}, index=keys).round(3),
-                 use_container_width=True)
+                 width="stretch")
 
 with st.expander("Monthly returns (table view)"):
     st.dataframe(bt[["gross", "cost", "net", "benchmark", "turnover"]].sort_index(ascending=False)
-                 .style.format("{:.2%}"), use_container_width=True)
+                 .style.format("{:.2%}"), width="stretch")
 
 st.caption("Caveats: survivorship bias (universe = today's listings, delisted names absent) "
            "flatters both lines; small/illiquid names may not be tradable at the modeled cost; "

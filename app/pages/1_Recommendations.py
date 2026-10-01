@@ -50,7 +50,7 @@ left, right = st.columns([3, 2])
 with left:
     st.dataframe(
         top[cols].rename(columns={"pred": "score", "gics_sector": "sector"}),
-        use_container_width=True, hide_index=True,
+        width="stretch", hide_index=True,
         column_config={"score": st.column_config.NumberColumn(format="%.4f")},
     )
 with right:
@@ -58,7 +58,7 @@ with right:
     fig = px.bar(by_sector, x="n", y="sector", orientation="h",
                  title=f"Top-{top_n} sector breakdown")
     fig.update_layout(yaxis={"categoryorder": "total ascending"}, height=420)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 st.caption("Scores are within-sector cross-sectional rank predictions; features shown "
            "are normalized ranks in [0,1]. Long-only selection caps/weights are applied "
