@@ -36,7 +36,9 @@ def ssh_command(args: list[str], *, host: str | None = None, key_dir: str = KEY_
         "-o", "ConnectTimeout=15",
         # Detect a dead box/LAN instead of hanging for hours on a silent socket.
         "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=10",
-        host, *args,
+        # glibc getopt permutes argv, so without "--" ssh would parse the remote
+        # args (e.g. --no-tune) as its own options.
+        "--", host, *args,
     ]
 
 

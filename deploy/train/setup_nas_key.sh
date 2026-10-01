@@ -53,4 +53,4 @@ printf 'restrict,command="%s/factor-train/remote_train.sh",from="%s" %s\n' \
       chmod 600 ~/.ssh/authorized_keys.new && mv ~/.ssh/authorized_keys.new ~/.ssh/authorized_keys
       grep ' $TAG\$' ~/.ssh/authorized_keys | cut -c1-110
     "
-echo "==> Done. Test from the NAS:  ssh -i $KEY_DIR/id_ed25519 -o UserKnownHostsFile=$KEY_DIR/known_hosts $TRAIN_HOST --bogus   (expect: rejected argument)"
+echo "==> Done. Test from the NAS:  ssh -i $KEY_DIR/id_ed25519 -o UserKnownHostsFile=$KEY_DIR/known_hosts -- $TRAIN_HOST --bogus   (expect: rejected argument)"
