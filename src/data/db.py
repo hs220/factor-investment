@@ -127,13 +127,14 @@ _FF_RENAME = {
 
 def load_universe(universe: pd.DataFrame) -> int:
     """Upsert the universe table. Accepts columns ticker[, name, exchange,
-    gics_sector]; missing optional columns are filled null."""
-    df = universe.copy()
-    for c in ("name", "exchange", "gics_sector"):
-        if c not in df.columns:
-            df[c] = None
-    df = df[["ticker", "name", "exchange", "gics_sector"]]
-    return upsert(df, "universe", ["ticker"])
+    gics_sector].
+
+    Only the columns actually supplied are written: the listing refresh carries
+    no sector, and upserting a NULL ``gics_sector`` would wipe the sectors the
+    ``sectors`` asset maintains (this blanked every sector from 2026-07).
+    """
+    cols = ["ticker"] + [c for c in ("name", "exchange", "gics_sector") if c in universe.columns]
+    return upsert(universe[cols].copy(), "universe", ["ticker"])
 
 
 def load_prices_wide(close: pd.DataFrame, volume: pd.DataFrame | None = None) -> int:
@@ -457,11 +458,21 @@ def read_model_registry(horizon: str, version: str = "latest") -> tuple[dict, by
     return row[0], bytes(row[1])
 
 
-def set_active(active_tickers: list[str]) -> int:
+def set_active(active_tickers: list[str], *, min_keep_frac: float = 0.5) -> int:
     """Mark the investable (liquidity-passing) set: is_active=true for the given
     tickers, false for all others. universe_table loads all listed names; this
-    is how the liquidity filter is recorded so downstream reads WHERE is_active."""
+    is how the liquidity filter is recorded so downstream reads WHERE is_active.
+
+    Refuses to shrink the set below ``min_keep_frac`` of its current size: a
+    partial price download (a yfinance outage) once collapsed it to ~50 names,
+    which scoped every downstream ingest to those 50.
+    """
     active = list(active_tickers)
+    current = int(read_sql("SELECT count(*) AS c FROM universe WHERE is_active")["c"].iloc[0])
+    if current and len(active) < min_keep_frac * current:
+        raise ValueError(
+            f"refusing to shrink the investable set from {current} to {len(active)} "
+            f"names (< {min_keep_frac:.0%}); likely a partial price download")
     raw = get_engine().raw_connection()
     try:
         with raw.cursor() as cur:

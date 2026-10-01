@@ -26,26 +26,32 @@ def _count(sql: str) -> int:
 # --------------------------------------------------------------------------- #
 # universe
 # --------------------------------------------------------------------------- #
-@asset_check(asset=assets.universe_table, description="is_active count in a sane band")
+# Blocking ERROR: a collapsed investable set (2026-09: ~50 names after a partial
+# price download) silently scopes every downstream ingest to those names.
+@asset_check(asset=assets.universe_table, description="is_active count in a sane band",
+             blocking=True)
 def universe_active_band() -> AssetCheckResult:
     n = _count("SELECT count(*) c FROM universe WHERE is_active")
     return AssetCheckResult(
         passed=2000 <= n <= 5000,
-        severity=AssetCheckSeverity.WARN,
+        severity=AssetCheckSeverity.ERROR,
         metadata={"investable": n},
     )
 
 
-@asset_check(asset=assets.sectors, description="sector coverage of investable names")
+@asset_check(asset=assets.sectors, description="sector coverage of investable names",
+             blocking=True)
 def universe_sector_coverage() -> AssetCheckResult:
+    """Share of investable names with a sector — AND an absolute floor, since a
+    collapsed active set (48 of 50) once passed the ratio alone."""
     active = _count("SELECT count(*) c FROM universe WHERE is_active")
     with_sec = _count(
         "SELECT count(*) c FROM universe WHERE is_active AND gics_sector IS NOT NULL"
     )
     frac = with_sec / active if active else 0.0
     return AssetCheckResult(
-        passed=frac >= 0.90,
-        severity=AssetCheckSeverity.WARN,
+        passed=frac >= 0.90 and with_sec >= 2000,
+        severity=AssetCheckSeverity.ERROR,
         metadata={"coverage_pct": round(frac * 100, 1), "with_sector": with_sec,
                   "investable": active},
     )
@@ -186,7 +192,29 @@ def fundamental_features_unique_keys() -> AssetCheckResult:
 # --------------------------------------------------------------------------- #
 # panel_monthly (gold training matrix)
 # --------------------------------------------------------------------------- #
-@asset_check(asset=assets.panel_monthly, description="row count not collapsed (partial build)")
+@asset_check(asset=assets.panel_monthly,
+             description="rows with a forward return carry a target (latest year)",
+             blocking=True)
+def panel_monthly_target_coverage() -> AssetCheckResult:
+    """Blocks model_predictions on a degenerate panel. A sector outage NULLs every
+    sector-neutral feature + the target while row counts stay normal (2026-09)."""
+    df = db.read_sql(
+        """SELECT count(forward_return) AS n_fr, count(target) AS n_tgt,
+                  count(momentum_12_2) AS n_mom
+             FROM panel_monthly
+            WHERE date > (SELECT max(date) FROM panel_monthly) - INTERVAL '12 months'"""
+    ).iloc[0]
+    cov = float(df["n_tgt"]) / float(df["n_fr"]) if df["n_fr"] else 0.0
+    return AssetCheckResult(
+        passed=cov >= 0.80 and int(df["n_mom"]) > 0,
+        severity=AssetCheckSeverity.ERROR,
+        metadata={"target_coverage_pct": round(cov * 100, 1),
+                  "momentum_rows": int(df["n_mom"])},
+    )
+
+
+@asset_check(asset=assets.panel_monthly, description="row count not collapsed (partial build)",
+             blocking=True)
 def panel_monthly_row_count() -> AssetCheckResult:
     n = _count("SELECT count(*) c FROM panel_monthly")
     return AssetCheckResult(
@@ -304,6 +332,7 @@ ALL_CHECKS = [
     fundamental_features_row_count,
     fundamental_features_unique_keys,
     panel_monthly_row_count,
+    panel_monthly_target_coverage,
     panel_monthly_unique_keys,
     panel_monthly_rank_bounds,
     predictions_row_count,

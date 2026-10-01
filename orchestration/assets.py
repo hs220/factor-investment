@@ -16,6 +16,10 @@ from src.data import db, factors, fundamentals, prices, universe, warehouse
 # Transient external sources (FRED/yfinance/EDGAR) self-heal via step retry.
 _RETRY = RetryPolicy(max_retries=3, delay=30, backoff=Backoff.EXPONENTIAL)
 
+# panel_monthly is refused (not written) below this share of rows-with-a-forward-
+# return that carry a target. Healthy builds are ~95%+ (only sectorless names drop).
+_PANEL_MIN_TARGET_COVERAGE = 0.80
+
 
 def _date_range() -> tuple[str, str]:
     start = load_config("data")["prices"]["start_date"]
@@ -98,8 +102,11 @@ def sectors(context) -> None:
     )["ticker"].tolist()
     sec = fundamentals.fetch_sectors(tickers)
     # Store raw sic too, so future mapping changes are an instant re-map
-    # (scripts/remap_sectors.py) with no EDGAR re-fetch.
-    n = db.upsert(sec[["ticker", "sic", "gics_sector"]], "universe", ["ticker"]) if not sec.empty else 0
+    # (scripts/remap_sectors.py) with no EDGAR re-fetch. Write only names that
+    # resolved to a sector: a transient EDGAR/yfinance miss must not NULL out a
+    # sector we already know.
+    mapped = sec[sec["gics_sector"].notna()] if not sec.empty else sec
+    n = db.upsert(mapped[["ticker", "sic", "gics_sector"]], "universe", ["ticker"]) if not mapped.empty else 0
     src = sec["sector_source"].value_counts().to_dict() if not sec.empty else {}
     context.add_output_metadata({
         "updated": n,
@@ -166,12 +173,24 @@ def panel_monthly(context) -> None:
     from src.factors.panel import assemble_panel
 
     panel = assemble_panel(source="db")
+    # Pre-write guard: the upsert overwrites the gold table in place, so a check
+    # that runs afterwards can't undo damage. Rows without a sector lose every
+    # normalized feature + the target (sector-neutral ranks), so a sector outage
+    # shows up here as a target-coverage collapse.
+    has_fr = panel["forward_return"].notna()
+    cov = float(panel.loc[has_fr, "target"].notna().mean()) if has_fr.any() else 0.0
+    if cov < _PANEL_MIN_TARGET_COVERAGE:
+        raise Exception(
+            f"refusing to write panel_monthly: only {cov:.1%} of rows with a forward "
+            f"return have a target (< {_PANEL_MIN_TARGET_COVERAGE:.0%}); check "
+            "universe.gics_sector coverage")
     n = db.load_panel_monthly(panel)
     context.add_output_metadata({
         "rows": n,
         "tickers": int(panel["ticker"].nunique()),
         "dates": int(panel["date"].nunique()),
         "sectors": int(panel["gics_sector"].nunique()),
+        "target_coverage_pct": round(cov * 100, 1),
     })
 
 

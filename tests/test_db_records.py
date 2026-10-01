@@ -47,3 +47,25 @@ def test_no_value_rendered_as_nan_text():
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+def test_load_universe_writes_only_supplied_columns(monkeypatch):
+    """The listing refresh carries no sector; it must not upsert NULL over it."""
+    from src.data import db
+
+    seen = {}
+    monkeypatch.setattr(db, "upsert", lambda df, table, conflict: seen.update(cols=list(df.columns)) or len(df))
+    db.load_universe(pd.DataFrame({"ticker": ["A"], "name": ["a"], "exchange": ["X"]}))
+    assert seen["cols"] == ["ticker", "name", "exchange"]          # no gics_sector
+    db.load_universe(pd.DataFrame({"ticker": ["A"], "gics_sector": ["Energy"]}))
+    assert seen["cols"] == ["ticker", "gics_sector"]
+
+
+def test_set_active_refuses_collapse(monkeypatch):
+    import pytest
+
+    from src.data import db
+
+    monkeypatch.setattr(db, "read_sql", lambda q: pd.DataFrame({"c": [4000]}))
+    with pytest.raises(ValueError, match="refusing to shrink"):
+        db.set_active([f"T{i}" for i in range(50)])
