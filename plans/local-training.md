@@ -53,6 +53,20 @@ the DB as asset metadata. A compromised NAS can only start a training run.
 Setup: `deploy/train/setup_nas_key.sh` (idempotent). Image updates stay manual:
 commit → `deploy/train/build.sh`. Wake-on-LAN dropped (the box is always on).
 
+**Phase 2 result (2026-10-01) — verified end to end.** Dagster run `e18c5dc9`
+(`model_train`, launched on the NAS): `panel_monthly` rebuilt in 4m24s (1.50M rows,
+90.4% target coverage, all 4 checks incl. the new blocking coverage check passed) →
+`model_predictions` ssh'd to the box, streamed the container log, finished in 42m27s →
+registered `lightgbm-1m-20261001171848` (code `87a838c`; IC 0.0289, IR 0.435, t 7.31)
+with 1,323,874 prediction rows → both prediction checks passed. Whole run 48 min.
+Incident found on the way: the first Phase-2 run rebuilt a **corrupted panel** —
+`load_universe` had NULLed every sector monthly since 2026-07, and a partial price
+download had collapsed `is_active` to ~50 names on 2026-09-04, so `sectors` only
+restored those 50. Fixed in `87a838c` (column-scoped universe upsert, `set_active`
+shrink guard, sectors never writes NULL, pre-write panel guard, blocking ERROR checks);
+sectors restored from stored SIC + a `sectors` re-run (99.8% of active names).
+Open: the monthly `model_train` schedule is still STOPPED (user's call to enable).
+
 ## Decision (locked with user)
 Keep **Dagster + Postgres on the NAS** as orchestrator + warehouse. The heavy
 training step runs in a **Docker container on the desktop**, launched by Dagster via
