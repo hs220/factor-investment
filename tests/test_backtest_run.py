@@ -28,7 +28,8 @@ def _preds(n_dates=24, n_names=60, live_month=True, seed=0):
 def test_backtest_excludes_unrealized_month_and_beats_benchmark():
     preds, dates = _preds()
     res = run_strategy_backtest(preds, n_holdings=10)
-    assert list(res.returns.index) == list(dates)            # live month dropped
+    # live month dropped; rows keyed by realization month (formation + 1)
+    assert list(res.returns.index) == list(dates + pd.offsets.MonthEnd(1))
     assert {"gross", "net", "cost", "turnover", "benchmark"} <= set(res.returns.columns)
     assert (res.returns["net"] <= res.returns["gross"]).all()  # costs only subtract
     assert res.strategy["ann_return"] > res.benchmark["ann_return"]   # signal is real
@@ -39,9 +40,24 @@ def test_backtest_excludes_unrealized_month_and_beats_benchmark():
 def test_backtest_attribution_with_factors():
     preds, dates = _preds()
     rng = np.random.default_rng(1)
-    factors = pd.DataFrame(rng.normal(scale=0.03, size=(len(dates), 7)), index=dates,
+    factors = pd.DataFrame(rng.normal(scale=0.03, size=(len(dates), 7)),
+                           index=dates + pd.offsets.MonthEnd(1),
                            columns=["Mkt-RF", "SMB", "HML", "RMW", "CMA", "MOM", "RF"])
     factors["RF"] = 0.001
     res = run_strategy_backtest(preds, factors, n_holdings=10)
     assert res.attribution["n_months"] == len(dates)
     assert set(res.attribution["betas"]) == {"Mkt-RF", "SMB", "HML", "RMW", "CMA", "MOM"}
+
+
+def test_attribution_aligns_realization_month():
+    """A strategy that IS the market (realized next month) must load ~1 on Mkt-RF."""
+    rng = np.random.default_rng(2)
+    dates = pd.date_range("2015-01-31", periods=60, freq="ME")
+    mkt = pd.Series(rng.normal(0.01, 0.04, size=61), index=dates.append(dates[-1:] + pd.offsets.MonthEnd(1)))
+    rows = [pd.DataFrame({"date": d, "ticker": [f"T{i}" for i in range(20)], "pred": rng.normal(size=20),
+                          "forward_return": mkt.loc[d + pd.offsets.MonthEnd(1)]}) for d in dates]
+    factors = pd.DataFrame(0.0, index=mkt.index, columns=["Mkt-RF", "SMB", "HML", "RMW", "CMA", "MOM", "RF"])
+    factors["Mkt-RF"] = mkt
+    factors[["SMB", "HML", "RMW", "CMA", "MOM"]] = rng.normal(scale=0.02, size=(61, 5))
+    res = run_strategy_backtest(pd.concat(rows, ignore_index=True), factors, n_holdings=20)
+    assert res.attribution["betas"]["Mkt-RF"] > 0.9 and res.attribution["r_squared"] > 0.9

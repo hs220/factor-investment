@@ -16,7 +16,9 @@ from src.portfolio.construct import build_portfolio
 
 @dataclass
 class BacktestResult:
-    returns: pd.DataFrame        # date-indexed: gross, turnover, cost, net, benchmark
+    # Indexed by REALIZATION month-end: the row for month m holds the return over
+    # month m of the portfolio formed at the end of month m-1.
+    returns: pd.DataFrame        # gross, turnover, cost, net, benchmark
     holdings: pd.DataFrame       # long (date, ticker, weight)
     strategy: dict               # performance_summary of net returns
     benchmark: dict              # performance_summary of the benchmark
@@ -41,6 +43,11 @@ def run_strategy_backtest(
     holdings = build_portfolio(preds, n_holdings=n_holdings)
     bt = engine.run_backtest(holdings, preds)
     bt["benchmark"] = engine.benchmark_return(preds)
+    # Predictions are keyed by formation date t, but forward_return is realized
+    # over (t, t+1]. Re-key to the realization month so the series lines up with
+    # calendar factor returns (attribution) and dates the equity curve correctly;
+    # left at t, the regression pairs each return with the prior month's factors.
+    bt.index = bt.index + pd.offsets.MonthEnd(1)
 
     attr = (attribution.factor_attribution(bt["net"], factors)
             if factors is not None else {"error": "no factors supplied"})
