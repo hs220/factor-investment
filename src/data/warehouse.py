@@ -72,3 +72,37 @@ def load_sectors() -> pd.DataFrame:
     df = db.read_sql("SELECT ticker, gics_sector FROM universe WHERE is_active")
     df["gics_sector"] = df["gics_sector"].replace(_JUNK_SECTORS)
     return df
+
+
+# FF factor names as the Ken French library spells them (attribution's contract).
+_FF_NAMES = {"mkt_rf": "Mkt-RF", "smb": "SMB", "hml": "HML", "rmw": "RMW",
+             "cma": "CMA", "rf": "RF", "mom": "MOM"}
+
+
+def load_ff_factors() -> pd.DataFrame:
+    """FF5 + MOM (decimal monthly returns), month-end index, Ken French names."""
+    df = db.read_sql("SELECT * FROM ff_factors")
+    df["date"] = pd.to_datetime(df["date"])
+    return df.set_index("date").sort_index().rename(columns=_FF_NAMES)
+
+
+def latest_model_version(horizon: str = "1m") -> str | None:
+    """Newest registered model for the horizon (``model_registry``), if any."""
+    df = db.read_sql(
+        "SELECT model_version FROM model_registry WHERE horizon = :h "
+        "ORDER BY created_at DESC LIMIT 1", h=horizon)
+    return None if df.empty else str(df["model_version"].iloc[0])
+
+
+def load_oos_predictions(model_version: str, horizon: str = "1m") -> pd.DataFrame:
+    """Walk-forward OOS scores for one model, joined to the realized forward
+    return + sector from ``panel_monthly``. Columns: date, ticker, pred,
+    forward_return, gics_sector (the shape src/portfolio + src/backtest expect)."""
+    df = db.read_sql(
+        """SELECT p.date, p.ticker, p.score AS pred, m.forward_return, m.gics_sector
+             FROM predictions p
+             LEFT JOIN panel_monthly m ON m.date = p.date AND m.ticker = p.ticker
+            WHERE p.model_version = :v AND p.horizon = :h""",
+        v=model_version, h=horizon)
+    df["date"] = pd.to_datetime(df["date"])
+    return df.sort_values(["date", "ticker"]).reset_index(drop=True)
