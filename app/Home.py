@@ -30,7 +30,7 @@ the pipeline produces. Use the pages in the sidebar:
 
 - **Recommendations** — the latest month's top names from the deployed model.
 - **Signal / IC** — how each factor predicts forward returns.
-- *(Performance / backtest — coming next.)*
+- **Performance** — the out-of-sample backtest of the long-only top-N strategy.
 """
 )
 

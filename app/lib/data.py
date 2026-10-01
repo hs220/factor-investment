@@ -25,6 +25,7 @@ from src.data import db, warehouse
 from src.factors import evaluate
 from src.factors.panel import _feature_list
 from src.serving.recommend import latest_recommendations
+from src.backtest.run import BacktestResult, run_strategy_backtest
 
 DAGSTER_URL = "http://192.168.68.70:3030"
 _MACRO = ("yield_curve", "vix", "credit_spread")
@@ -61,3 +62,14 @@ def feature_coverage(since: str = "2015-01-01") -> pd.Series:
     p = panel()
     recent = p[p["date"] >= since]
     return (recent[_feature_list()].notna().mean() * 100).round(0).sort_values()
+
+
+@st.cache_data(ttl=3600, show_spinner="Running backtest on OOS predictions…")
+def backtest(n_holdings: int | None = None, horizon: str = "1m") -> tuple[str, BacktestResult] | None:
+    """(model_version, result) for the newest registered model; None if no model yet."""
+    version = warehouse.latest_model_version(horizon)
+    if version is None:
+        return None
+    preds = warehouse.load_oos_predictions(version, horizon)
+    return version, run_strategy_backtest(preds, warehouse.load_ff_factors(),
+                                          n_holdings=n_holdings)

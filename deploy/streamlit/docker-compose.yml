@@ -1,0 +1,17 @@
+# Streamlit dashboard on the NAS (LAN-only, no auth — see plans/frontend.md).
+#   POSTGRES_PASSWORD comes from deploy/streamlit/.env (written by deploy_streamlit.sh
+#   from the Timescale .env).  Bring up: ./deploy/deploy_streamlit.sh up
+services:
+  dashboard:
+    build:
+      context: ../..
+      dockerfile: deploy/streamlit/Dockerfile
+    image: factor-dashboard:latest
+    container_name: factor-dashboard
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in deploy/streamlit/.env}
+      FACTOR_DB_HOST: ${FACTOR_DB_HOST:-192.168.68.70}
+      FACTOR_DB_PORT: ${FACTOR_DB_PORT:-5433}
+    ports:
+      - "${DASHBOARD_PORT:-8501}:8501"
+    restart: unless-stopped
