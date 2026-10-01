@@ -12,13 +12,24 @@ The manifest's ``feature_list`` is the explicit guard against training-serving
 skew: ``predict_with_artifact`` asserts the live feature columns match it before
 scoring. ``models/<horizon>/latest.txt`` points at the newest version.
 
+Two stores hold the same (estimator, manifest) pair:
+
+* ``"fs"`` — the directory layout above; local dev and single-machine runs.
+* ``"db"`` — the warehouse ``model_registry`` table (manifest ``jsonb`` + joblib
+  ``bytea``). Training runs on a different box than inference, so this is how an
+  artifact crosses machines; "latest" is the newest row for the horizon.
+
+``store=None`` resolves to ``$FACTOR_MODEL_STORE`` (default ``"fs"``).
+
 joblib is used over raw pickle (efficient for numpy, the sklearn convention) in a
 controlled, dependency-pinned runtime; the JSON manifest is the durable,
 human-readable record of how the model was built.
 """
 from __future__ import annotations
 
+import io
 import json
+import os
 import subprocess
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -29,6 +40,14 @@ import pandas as pd
 # Repo-root-anchored so artifacts always land in <repo>/models/ regardless of the
 # caller's working directory (train.py runs from the root; notebooks from notebooks/).
 MODELS_DIR = Path(__file__).resolve().parents[2] / "models"
+STORES = ("fs", "db")
+
+
+def _store(store: str | None) -> str:
+    store = store or os.environ.get("FACTOR_MODEL_STORE", "fs")
+    if store not in STORES:
+        raise ValueError(f"unknown model store {store!r}; expected one of {STORES}")
+    return store
 
 
 @dataclass
@@ -51,6 +70,9 @@ class Manifest:
 
 
 def _git_sha() -> str:
+    # Container images carry no .git; the build stamps the commit into the env.
+    if os.environ.get("FACTOR_CODE_SHA"):
+        return os.environ["FACTOR_CODE_SHA"]
     try:
         return subprocess.check_output(
             ["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL
@@ -69,10 +91,23 @@ def save_artifact(
     manifest: Manifest,
     *,
     models_dir: Path | str = MODELS_DIR,
-) -> Path:
-    """Write the estimator + manifest under models/<horizon>/<version>/ and bump
-    the ``latest`` pointer. Returns the artifact directory."""
+    store: str | None = None,
+) -> Path | None:
+    """Persist the estimator + manifest to the chosen store.
+
+    ``fs``: write under models/<horizon>/<version>/, bump the ``latest`` pointer,
+    and return the artifact directory. ``db``: upsert into ``model_registry``
+    (returns ``None``).
+    """
     import joblib
+
+    if _store(store) == "db":
+        from src.data import db
+
+        buf = io.BytesIO()
+        joblib.dump(model, buf)
+        db.save_model_registry(asdict(manifest), buf.getvalue())
+        return None
 
     root = Path(models_dir) / manifest.horizon
     dest = root / manifest.model_version
@@ -101,9 +136,16 @@ def load_artifact(
     version: str = "latest",
     *,
     models_dir: Path | str = MODELS_DIR,
+    store: str | None = None,
 ) -> tuple[object, Manifest]:
     """Load (estimator, manifest) for a horizon (default: the latest version)."""
     import joblib
+
+    if _store(store) == "db":
+        from src.data import db
+
+        man, blob = db.read_model_registry(horizon, version)
+        return joblib.load(io.BytesIO(blob)), Manifest(**man)
 
     dest = _resolve_version(horizon, version, models_dir)
     model = joblib.load(dest / "model.joblib")
@@ -117,6 +159,7 @@ def predict_with_artifact(
     *,
     version: str = "latest",
     models_dir: Path | str = MODELS_DIR,
+    store: str | None = None,
 ) -> pd.Series:
     """Score a feature cross-section with a deployed model.
 
@@ -125,7 +168,7 @@ def predict_with_artifact(
     The model is a pipeline that imputes internally, so raw features are passed —
     the same imputation as training, by construction.
     """
-    model, manifest = load_artifact(horizon, version, models_dir=models_dir)
+    model, manifest = load_artifact(horizon, version, models_dir=models_dir, store=store)
     missing = [c for c in manifest.feature_list if c not in features_df.columns]
     if missing:
         raise ValueError(

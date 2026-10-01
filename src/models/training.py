@@ -33,12 +33,14 @@ def train_and_deploy(
     horizon: str = "1m",
     tune: bool = False,
     save_model: bool = True,
+    store: str | None = None,
     cfg: dict | None = None,
 ) -> TrainResult:
     """Walk-forward OOS estimate, then fit + persist a deployment model.
 
     Returns the OOS predictions, their IC summary, and the artifact manifest
     (``None`` when ``save_model`` is false or no predictions were produced).
+    ``store`` picks the artifact store (``"fs"`` | ``"db"``; see ``artifact``).
     """
     cfg = cfg or load_config("model")
 
@@ -79,6 +81,6 @@ def train_and_deploy(
             code_sha=artifact._git_sha(),
             created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         )
-        artifact.save_artifact(model, manifest)
+        artifact.save_artifact(model, manifest, store=store)
 
     return TrainResult(oos, summary, manifest)

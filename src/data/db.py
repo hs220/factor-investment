@@ -383,6 +383,80 @@ def load_predictions(preds: pd.DataFrame, horizon: str, model_version: str) -> i
     )
 
 
+# Deployment-model registry: the cross-machine artifact store. Training runs on a
+# different box than inference, so the fitted pipeline travels through the
+# warehouse (joblib bytes) instead of a shared filesystem.
+_MODEL_REGISTRY_DDL = """
+CREATE TABLE IF NOT EXISTS model_registry (
+    model_version  text PRIMARY KEY,
+    horizon        text NOT NULL,
+    model_name     text NOT NULL,
+    manifest       jsonb NOT NULL,
+    artifact       bytea NOT NULL,
+    created_at     timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_model_registry_horizon
+    ON model_registry (horizon, created_at DESC);
+"""
+
+
+def ensure_model_registry_table() -> None:
+    """Create the ``model_registry`` table + index if absent."""
+    from sqlalchemy import text
+
+    with get_engine().begin() as conn:
+        for stmt in filter(str.strip, _MODEL_REGISTRY_DDL.split(";")):
+            conn.execute(text(stmt))
+
+
+def save_model_registry(manifest: dict, artifact: bytes) -> None:
+    """Upsert one deployment artifact (manifest dict + serialized model bytes)."""
+    import json
+
+    from sqlalchemy import text
+
+    ensure_model_registry_table()
+    with get_engine().begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO model_registry "
+                "(model_version, horizon, model_name, manifest, artifact) "
+                "VALUES (:v, :h, :n, CAST(:m AS jsonb), :a) "
+                "ON CONFLICT (model_version) DO UPDATE SET "
+                "horizon = EXCLUDED.horizon, model_name = EXCLUDED.model_name, "
+                "manifest = EXCLUDED.manifest, artifact = EXCLUDED.artifact"
+            ),
+            {"v": manifest["model_version"], "h": manifest["horizon"],
+             "n": manifest["model_name"], "m": json.dumps(manifest), "a": artifact},
+        )
+
+
+def read_model_registry(horizon: str, version: str = "latest") -> tuple[dict, bytes]:
+    """Return ``(manifest, artifact_bytes)`` for a version (default: newest for
+    the horizon). Raises ``FileNotFoundError`` when absent, like the fs store."""
+    from sqlalchemy import text
+
+    if version == "latest":
+        sql = ("SELECT manifest, artifact FROM model_registry WHERE horizon = :h "
+               "ORDER BY created_at DESC, model_version DESC LIMIT 1")
+        params = {"h": horizon}
+    else:
+        sql = ("SELECT manifest, artifact FROM model_registry "
+               "WHERE horizon = :h AND model_version = :v")
+        params = {"h": horizon, "v": version}
+    from sqlalchemy.exc import ProgrammingError
+
+    try:
+        with get_engine().connect() as conn:
+            row = conn.execute(text(sql), params).first()
+    except ProgrammingError:      # registry table not created yet
+        row = None
+    if row is None:
+        raise FileNotFoundError(
+            f"no model in model_registry for horizon={horizon!r} version={version!r}")
+    return row[0], bytes(row[1])
+
+
 def set_active(active_tickers: list[str]) -> int:
     """Mark the investable (liquidity-passing) set: is_active=true for the given
     tickers, false for all others. universe_table loads all listed names; this

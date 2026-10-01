@@ -1,0 +1,13 @@
+# Training image deps (deploy/train): warehouse I/O + walk-forward + LightGBM +
+# the Dagster Pipes client side. Install with `-c constraints-ml.txt`.
+pandas
+numpy
+scipy
+pyarrow>=14.0
+sqlalchemy>=2.0
+psycopg2-binary>=2.9
+pyyaml>=6.0
+scikit-learn
+lightgbm
+joblib
+dagster-pipes

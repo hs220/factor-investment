@@ -18,12 +18,14 @@ def latest_recommendations(
     version: str = "latest",
     asof: str | pd.Timestamp | None = None,
     panel: pd.DataFrame | None = None,
+    store: str | None = None,
 ) -> tuple[pd.DataFrame, artifact.Manifest, pd.Timestamp]:
     """Score the latest (or ``asof``) panel cross-section with the deployed model.
 
     Returns ``(ranked, manifest, asof)`` — the full cross-section with a ``pred``
     column sorted high→low (the caller slices top-N), the model manifest, and the
     as-of month-end. ``panel`` may be supplied to avoid re-reading the warehouse.
+    ``store`` picks the artifact store (default ``$FACTOR_MODEL_STORE``, else fs).
     """
     if panel is None:
         panel = warehouse.load_panel_monthly()
@@ -32,7 +34,8 @@ def latest_recommendations(
     if cross.empty:
         raise ValueError(f"no panel rows for {pd.Timestamp(asof).date()}")
 
-    _, manifest = artifact.load_artifact(horizon, version)
-    cross["pred"] = artifact.predict_with_artifact(cross, horizon, version=version)
+    _, manifest = artifact.load_artifact(horizon, version, store=store)
+    cross["pred"] = artifact.predict_with_artifact(
+        cross, horizon, version=manifest.model_version, store=store)
     ranked = cross.sort_values("pred", ascending=False).reset_index(drop=True)
     return ranked, manifest, asof

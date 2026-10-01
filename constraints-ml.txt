@@ -1,0 +1,12 @@
+# Exact pins shared by every image that trains OR loads a model artifact
+# (deploy/train = training box, deploy/dagster = NAS inference/orchestration).
+# A joblib'd sklearn Pipeline + LightGBM booster only loads reliably into the same
+# library versions it was pickled with, so both images install with
+# `-c constraints-ml.txt`. Bump these together, then rebuild BOTH images.
+numpy==2.4.6
+pandas==3.0.3
+scipy==1.17.1
+scikit-learn==1.9.0
+lightgbm==4.6.0
+joblib==1.5.3
+dagster-pipes==1.13.7

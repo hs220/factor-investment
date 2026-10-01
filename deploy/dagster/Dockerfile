@@ -10,8 +10,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements-orchestration.txt .
-RUN pip install --no-cache-dir -r requirements-orchestration.txt
+# constraints-ml.txt pins the ML stack to the training image's versions so a
+# model_registry artifact trained on the training box loads here.
+COPY requirements-orchestration.txt constraints-ml.txt ./
+RUN pip install --no-cache-dir -r requirements-orchestration.txt -c constraints-ml.txt
 
 # Library + orchestration code + config (data/ is the warehouse, not copied).
 COPY src/ ./src/
