@@ -14,6 +14,7 @@ import pandas as pd
 from dagster import AssetCheckResult, AssetCheckSeverity, asset_check
 
 from orchestration import assets
+from src.config import load_config
 from src.data import db
 
 _EXPECTED_CONCEPTS = 10  # of 12 normalized concepts; some filers lack a few
@@ -213,6 +214,22 @@ def panel_monthly_target_coverage() -> AssetCheckResult:
     )
 
 
+@asset_check(asset=assets.panel_monthly,
+             description="realized forward returns inside the plausibility band",
+             blocking=True)
+def panel_monthly_return_bounds() -> AssetCheckResult:
+    """No price-artifact returns (e.g. +16,000% split seams) reach the target or
+    the backtest; the band is features.yaml panel.return_bounds."""
+    lo, hi = load_config("features")["panel"]["return_bounds"]
+    bad = _count(
+        f"SELECT count(*) c FROM panel_monthly WHERE forward_return < {float(lo)} "
+        f"OR forward_return > {float(hi)}")
+    return AssetCheckResult(
+        passed=bad == 0, severity=AssetCheckSeverity.ERROR,
+        metadata={"out_of_band_rows": bad, "bounds": f"[{lo}, {hi}]"},
+    )
+
+
 @asset_check(asset=assets.panel_monthly, description="row count not collapsed (partial build)",
              blocking=True)
 def panel_monthly_row_count() -> AssetCheckResult:
@@ -333,6 +350,7 @@ ALL_CHECKS = [
     fundamental_features_unique_keys,
     panel_monthly_row_count,
     panel_monthly_target_coverage,
+    panel_monthly_return_bounds,
     panel_monthly_unique_keys,
     panel_monthly_rank_bounds,
     predictions_row_count,

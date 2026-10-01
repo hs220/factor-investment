@@ -34,3 +34,28 @@ def test_load_missing_columns_raises_before_db():
     bad = pd.DataFrame({"date": [pd.Timestamp("2020-01-31")], "ticker": ["AAA"]})
     with pytest.raises(ValueError, match="missing expected columns"):
         db.load_panel_monthly(bad)
+
+
+def test_clean_returns_masks_out_of_band():
+    import numpy as np
+    import pandas as pd
+
+    from src.factors.panel import clean_returns
+
+    r = pd.DataFrame({"A": [0.05, 160.0, -0.99, 0.1], "B": [0.02, np.nan, 3.0, -0.95]})
+    clean, n = clean_returns(r, [-0.95, 3.0])
+    assert n == 2                                   # 160.0 and -0.99; bounds inclusive
+    assert clean["A"].isna().tolist() == [False, True, True, False]
+    assert clean["B"].tolist()[2:] == [3.0, -0.95]
+
+
+def test_find_rebased_flags_seam_not_partial_month():
+    import pandas as pd
+
+    from src.data.prices import find_rebased
+
+    idx = pd.to_datetime(["2026-07-31", "2026-08-31", "2026-09-30"])
+    stored = pd.DataFrame({"OK": [10.0, 11.0, 12.0], "SPLIT": [1.0, 1.1, 1.2]}, index=idx)
+    new = pd.DataFrame({"OK": [10.0, 11.0, 13.5],            # only the partial month moved
+                        "SPLIT": [10.0, 11.0, 12.0]}, index=idx)  # 1:10 re-adjusted history
+    assert find_rebased(new, stored, before=idx[-1]) == ["SPLIT"]

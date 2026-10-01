@@ -54,10 +54,23 @@ def prices_table(context) -> None:
     keep = [t for t in tradeable if t in close.columns]
 
     monthly_close = prices.to_monthly_close(close[keep])
+
+    # Re-adjusted history (split/dividend since the last load) can't be appended
+    # to: the stored months are on the old adjustment basis. Re-fetch those
+    # tickers' full history so the series stays on one basis.
+    rebased: list[str] = []
+    if last is not None:
+        stored = warehouse.load_prices_wide(since=start)
+        rebased = prices.find_rebased(monthly_close, stored, before=pd.Timestamp(last))
+        if rebased:
+            full = prices.download_prices(rebased, _date_range()[0], end, field="Close")
+            monthly_close = pd.concat(
+                [monthly_close.drop(columns=rebased, errors="ignore"),
+                 prices.to_monthly_close(full)], axis=1)
     n = db.load_prices_wide(monthly_close)
     # Record the investable set (liquidity filter) -> universe.is_active.
     db.set_active(keep)
-    context.add_output_metadata({"tickers": len(keep), "rows": n})
+    context.add_output_metadata({"tickers": len(keep), "rows": n, "rebased_refetched": len(rebased)})
 
 
 @asset(group_name="ingest", deps=[universe_table], compute_kind="edgar", retry_policy=_RETRY)
@@ -191,6 +204,7 @@ def panel_monthly(context) -> None:
         "dates": int(panel["date"].nunique()),
         "sectors": int(panel["gics_sector"].nunique()),
         "target_coverage_pct": round(cov * 100, 1),
+        "returns_masked": int(panel.attrs.get("returns_masked", 0)),
     })
 
 

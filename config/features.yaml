@@ -5,6 +5,10 @@ panel:
   target_horizon: 1            # months forward
   target: "forward_return_rank"   # within-sector cross-sectional rank
   sector_field: "gics_sector"  # neutralization grouping
+  # Plausibility band for a monthly simple return. Outside it the return is a
+  # price error (mostly yfinance split re-adjustment seams), not a trade: it is
+  # masked before features/target are built. See src/factors/panel.clean_returns.
+  return_bounds: [-0.95, 3.0]
 
 normalization:
   method: "cross_sectional"    # rank/z-score within each date

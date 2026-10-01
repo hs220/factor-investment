@@ -34,6 +34,21 @@ def _melt(wide: pd.DataFrame, value_name: str) -> pd.DataFrame:
     return long
 
 
+def clean_returns(
+    returns: pd.DataFrame, bounds: tuple[float, float] | list[float]
+) -> tuple[pd.DataFrame, int]:
+    """Mask monthly returns outside ``bounds`` as missing; return (clean, n_masked).
+
+    Domain data cleaning (category 3 in CLAUDE.md), not fitted preprocessing: a
+    +16,000% month is a price-adjustment seam, not information. Masking it here —
+    before momentum/volatility and the forward-return target are derived — keeps
+    one bad print from inflating features, the target rank, and backtest P&L.
+    """
+    lo, hi = bounds
+    bad = (returns < lo) | (returns > hi)
+    return returns.mask(bad), int(bad.sum().sum())
+
+
 def compute_price_features(returns: pd.DataFrame) -> pd.DataFrame:
     """Momentum and volatility from monthly returns (wide -> long).
 
@@ -150,6 +165,7 @@ def assemble_panel(*, source: str = "db", normalize: bool = True) -> pd.DataFram
     ncfg = fcfg["normalization"]
 
     returns, prices, fund, macro, sectors = _load_inputs(source)
+    returns, n_masked = clean_returns(returns, pcfg["return_bounds"])
 
     # 1-2. base + price features
     panel = compute_price_features(returns)
@@ -198,4 +214,6 @@ def assemble_panel(*, source: str = "db", normalize: bool = True) -> pd.DataFram
             "forward_return"
         ].rank(pct=True)
 
-    return panel.sort_values(["date", "ticker"]).reset_index(drop=True)
+    panel = panel.sort_values(["date", "ticker"]).reset_index(drop=True)
+    panel.attrs["returns_masked"] = n_masked     # implausible returns dropped
+    return panel

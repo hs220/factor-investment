@@ -104,6 +104,34 @@ def to_monthly_close(daily_prices: pd.DataFrame) -> pd.DataFrame:
     return daily_prices.resample("ME").last()
 
 
+def find_rebased(
+    new_monthly: pd.DataFrame,
+    stored_monthly: pd.DataFrame,
+    *,
+    before: pd.Timestamp,
+    tol: float = 0.02,
+) -> list[str]:
+    """Tickers whose freshly downloaded closes disagree with the stored ones.
+
+    yfinance returns split/dividend-*adjusted* closes and re-adjusts a ticker's
+    whole history after each corporate action. Appending a fresh incremental
+    download to history stored on the old basis leaves a fake jump at the seam
+    (a 1:10 reverse split reads as +900%), which polluted momentum, volatility
+    and realized returns. Compare the overlap months completed ``before`` the
+    newest stored month (that one is still a partial-month close) and flag any
+    ticker whose median |new/stored - 1| exceeds ``tol`` — its history must be
+    re-fetched in full, not appended to.
+    """
+    idx = new_monthly.index.intersection(stored_monthly.index)
+    idx = idx[idx < before]
+    cols = new_monthly.columns.intersection(stored_monthly.columns)
+    if len(idx) == 0 or len(cols) == 0:
+        return []
+    ratio = new_monthly.loc[idx, cols] / stored_monthly.loc[idx, cols]
+    dev = (ratio - 1).abs().median()
+    return sorted(dev[dev > tol].index)
+
+
 def to_monthly_returns(daily_prices: pd.DataFrame) -> pd.DataFrame:
     """Month-end resample -> simple monthly returns."""
     return to_monthly_close(daily_prices).pct_change().dropna(how="all")

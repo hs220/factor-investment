@@ -26,9 +26,12 @@ from src.data import db
 _JUNK_SECTORS = {"NaN": np.nan, "nan": np.nan, "None": np.nan, "none": np.nan, "": np.nan}
 
 
-def load_prices_wide() -> pd.DataFrame:
+def load_prices_wide(since: str | None = None) -> pd.DataFrame:
     """Monthly close as wide (date index x ticker). Prices are stored monthly."""
-    df = db.read_sql("SELECT ticker, date, close FROM prices")
+    if since:
+        df = db.read_sql("SELECT ticker, date, close FROM prices WHERE date >= :d", d=since)
+    else:
+        df = db.read_sql("SELECT ticker, date, close FROM prices")
     wide = df.pivot(index="date", columns="ticker", values="close")
     wide.index = pd.to_datetime(wide.index)
     wide.columns.name = None
