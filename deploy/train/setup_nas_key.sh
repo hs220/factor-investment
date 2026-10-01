@@ -3,7 +3,7 @@
 #
 #   ./deploy/train/setup_nas_key.sh
 #
-# 1. NAS: create a dedicated ed25519 key + pinned known_hosts for the box under
+# 1. NAS: create a dedicated ed25519 key + a pinned known_hosts for the box under
 #    deploy/dagster/train_ssh/ (gitignored; mounted read-only into the Dagster
 #    containers at /run/train_ssh).
 # 2. Box: install the forced-command script ~/factor-train/remote_train.sh.
@@ -20,15 +20,22 @@ TRAIN_IP="${TRAIN_HOST#*@}"
 KEY_DIR="$NAS_DIR/deploy/dagster/train_ssh"
 TAG="factor-dagster-train"
 
-echo "==> NAS: ensure training key + pinned box host key in $KEY_DIR..."
+echo "==> NAS: ensure training key in $KEY_DIR..."
 ssh "$NAS_HOST" "
   set -e
   mkdir -p '$KEY_DIR' && chmod 700 '$KEY_DIR'
   [ -f '$KEY_DIR/id_ed25519' ] || ssh-keygen -q -t ed25519 -N '' -C '$TAG' -f '$KEY_DIR/id_ed25519'
   chmod 600 '$KEY_DIR/id_ed25519'
-  ssh-keyscan -t ed25519 '$TRAIN_IP' 2>/dev/null > '$KEY_DIR/known_hosts'
-  test -s '$KEY_DIR/known_hosts'
 "
+
+# Pin the box's host key on the NAS. Synology has no ssh-keyscan, so read the
+# box's own public host key and require it to match the key this laptop already
+# trusts for the box (so a spoofed box can't get pinned).
+echo "==> Pin the box host key on the NAS (verified against this laptop's known_hosts)..."
+hostkey="$(ssh "$TRAIN_HOST" 'cut -d" " -f1,2 /etc/ssh/ssh_host_ed25519_key.pub')"
+ssh-keygen -F "$TRAIN_IP" | grep -qF "$hostkey" \
+  || { echo "box host key does not match ~/.ssh/known_hosts for $TRAIN_IP — aborting" >&2; exit 1; }
+printf '%s %s\n' "$TRAIN_IP" "$hostkey" | ssh "$NAS_HOST" "cat > '$KEY_DIR/known_hosts' && chmod 644 '$KEY_DIR/known_hosts'"
 
 echo "==> Box: install forced-command script..."
 ssh "$TRAIN_HOST" "mkdir -p ~/factor-train && cat > ~/factor-train/remote_train.sh && chmod 755 ~/factor-train/remote_train.sh" \
