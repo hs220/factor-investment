@@ -384,6 +384,46 @@ def load_predictions(preds: pd.DataFrame, horizon: str, model_version: str) -> i
     )
 
 
+# Daily adjusted OHLCV (the timing/daily panel's input). Separate from the monthly
+# ``prices`` table, which the monthly panel/backtest read unchanged.
+_PRICES_DAILY_DDL = """
+CREATE TABLE IF NOT EXISTS prices_daily (
+    ticker  text NOT NULL,
+    date    date NOT NULL,
+    open    double precision,
+    high    double precision,
+    low     double precision,
+    close   double precision NOT NULL,
+    volume  double precision,
+    PRIMARY KEY (ticker, date)
+);
+"""
+
+
+def ensure_prices_daily_table() -> None:
+    """Create ``prices_daily`` (+ Timescale hypertable on date) if absent."""
+    from sqlalchemy import text
+
+    with get_engine().begin() as conn:
+        conn.execute(text(_PRICES_DAILY_DDL))
+        conn.execute(text(
+            "SELECT create_hypertable('prices_daily', 'date', "
+            "chunk_time_interval => INTERVAL '1 year', if_not_exists => TRUE)"
+        ))
+
+
+def load_prices_daily(bars: pd.DataFrame) -> int:
+    """Upsert long daily bars (date, ticker, open, high, low, close, volume);
+    only rows with a positive close are stored."""
+    if bars.empty:
+        return 0
+    df = bars[["ticker", "date", "open", "high", "low", "close", "volume"]].copy()
+    df = df[df["close"].notna() & (df["close"] > 0)]
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    ensure_prices_daily_table()
+    return upsert(df, "prices_daily", ["ticker", "date"], chunksize=50_000)
+
+
 # Deployment-model registry: the cross-machine artifact store. Training runs on a
 # different box than inference, so the fitted pipeline travels through the
 # warehouse (joblib bytes) instead of a shared filesystem.

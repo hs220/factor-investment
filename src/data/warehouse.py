@@ -43,6 +43,22 @@ def load_returns_wide() -> pd.DataFrame:
     return load_prices_wide().pct_change().dropna(how="all")
 
 
+def load_prices_daily(since: str | None = None, fields: tuple[str, ...] = (
+        "open", "high", "low", "close", "volume")) -> dict[str, pd.DataFrame]:
+    """Daily bars as wide (date x ticker) frames, one per field."""
+    cols = ", ".join(fields)
+    where = "WHERE date >= :d" if since else ""
+    df = db.read_sql(f"SELECT ticker, date, {cols} FROM prices_daily {where}",
+                     **({"d": since} if since else {}))
+    df["date"] = pd.to_datetime(df["date"])
+    out = {}
+    for f in fields:
+        w = df.pivot(index="date", columns="ticker", values=f).sort_index()
+        w.columns.name = None
+        out[f] = w
+    return out
+
+
 def load_fundamental_features() -> pd.DataFrame:
     """The gold quarterly feature table (long), dates as datetime64[ns]."""
     df = db.read_sql("SELECT * FROM fundamental_features")

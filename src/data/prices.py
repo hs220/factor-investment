@@ -84,6 +84,64 @@ def download_prices(
     return pd.DataFrame(collected).sort_index()
 
 
+_BAR_FIELDS = ("Open", "High", "Low", "Close", "Volume")
+
+
+def download_daily_bars(
+    tickers: list[str],
+    start: str,
+    end: str,
+    *,
+    chunk_size: int | None = None,
+) -> pd.DataFrame:
+    """Daily adjusted OHLCV as a long frame (date, ticker, open..volume).
+
+    One yfinance call per chunk returns every field (``download_prices`` would
+    re-download per field). Same chunking + retry/backoff policy as
+    ``download_prices``; tickers with no bars after the retries are dropped.
+    """
+    cfg = load_config("data")["prices"]
+    chunk_size = chunk_size or cfg["chunk_size"]
+    chunk_sleep = cfg.get("chunk_sleep", 1.0)
+    max_retries = cfg.get("max_retries", 3)
+    backoff_base = cfg.get("backoff_base", 5.0)
+
+    frames: list[pd.DataFrame] = []
+    remaining = list(dict.fromkeys(tickers))
+    for attempt in range(max_retries + 1):
+        if not remaining:
+            break
+        if attempt > 0:
+            time.sleep(backoff_base * (2 ** (attempt - 1)))
+        failed: list[str] = []
+        for i in range(0, len(remaining), chunk_size):
+            chunk = remaining[i : i + chunk_size]
+            try:
+                raw = yf.download(chunk, start=start, end=end, auto_adjust=True,
+                                  progress=False, group_by="column")
+            except Exception:  # noqa: BLE001 - yfinance raises many shapes
+                raw = pd.DataFrame()
+            got: set[str] = set()
+            if raw is not None and not raw.empty:
+                if not isinstance(raw.columns, pd.MultiIndex):   # single ticker
+                    raw.columns = pd.MultiIndex.from_product([raw.columns, chunk[:1]])
+                fields = [f for f in _BAR_FIELDS if f in raw.columns.get_level_values(0)]
+                long = raw[fields].stack(level=1, future_stack=True)
+                long.index.names = ["date", "ticker"]
+                long = long.dropna(subset=["Close"]).reset_index()
+                long.columns = [c.lower() for c in long.columns]
+                frames.append(long)
+                got = set(long["ticker"])
+            failed += [t for t in chunk if t not in got]
+            time.sleep(chunk_sleep)
+        remaining = failed
+    if not frames:
+        return pd.DataFrame(columns=["date", "ticker", "open", "high", "low", "close", "volume"])
+    out = pd.concat(frames, ignore_index=True)
+    out["date"] = pd.to_datetime(out["date"]).dt.tz_localize(None)
+    return out.sort_values(["ticker", "date"]).reset_index(drop=True)
+
+
 def last_cached_month(monthly: pd.DataFrame | None) -> pd.Timestamp | None:
     """Most recent month-end already in a cached monthly frame, if any."""
     if monthly is None or monthly.empty:

@@ -47,3 +47,27 @@ features:
     - yield_curve
     - vix
     - credit_spread
+
+# Daily multi-horizon panel (timing models) — src/factors/panel_daily.py.
+# Prototype (notebook 06); see plans/roadmap.md "Next Phase".
+panel_daily:
+  start_date: "2015-01-01"     # prices_daily history depth (backfill scope)
+  horizons: [5, 10, 30]        # forward horizons in TRADING days -> target_{h}d
+  # Plausibility band for a DAILY simple return; outside it the print is a
+  # price error and is masked (same rationale as panel.return_bounds).
+  return_bounds: [-0.9, 2.0]
+  features:
+    - rev_1d                   # last day's return (short-term reversal)
+    - rev_5d                   # last week's return (weekly reversal)
+    - rev_21d                  # last month's return (monthly reversal)
+    - mom_252_21               # 12-1 momentum on daily data
+    - vol_21d                  # 1m realized vol
+    - vol_63d                  # 3m realized vol
+    - volume_surge             # 20d avg volume / 60d avg volume
+    - amihud_21d               # mean |r| / dollar volume (illiquidity)
+    - range_21d                # mean (high - low) / close
+    - dist_52w_high            # close / 252d max close
+    - size_log_mktcap          # log(close * shares), shares PIT from filings
+    - book_to_price            # equity / mktcap (PIT)
+    - earnings_yield           # net_income_ttm / mktcap (PIT)
+    - roe                      # PIT
