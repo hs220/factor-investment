@@ -102,6 +102,14 @@ Design decisions (locked):
   (`src/models/walkforward.py`). This is the key leakage trap.
 - N models train on the same panel, each selecting its target column.
 
+**Status (2026-10-01): prototype done, awaiting review.** `prices_daily` hypertable
+backfilled (9.07M adjusted OHLCV bars, 4,007 tickers, 2015+) via
+`scripts/backfill_prices_daily.py`; `src/factors/panel_daily.py` builds the panel
+(`fwd_{h}d`/`target_{h}d` for 5/10/30 trading days); notebook
+`06_panel_daily.ipynb` (executed) holds findings + open assumptions for the review
+gate. Not yet: walk-forward with a 30d embargo, per-horizon models, the
+`panel_daily`/`prices_daily` Dagster assets (with seam handling).
+
 Build it via the **promotion path** (CLAUDE.md): prototype as a `panel_daily`
 notebook over `src/` → user review → fix → productionize. Long-term target: a
 `panel_daily` Dagster asset (gold table + checks), same pattern as
