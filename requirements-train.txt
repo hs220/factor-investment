@@ -4,7 +4,7 @@ pandas
 numpy
 scipy
 pyarrow>=14.0
-sqlalchemy>=2.0
+sqlalchemy>=2.0,<2.1   # 2.1 defaults postgresql:// to psycopg v3 (not installed); dagster-postgres breaks
 psycopg2-binary>=2.9
 pyyaml>=6.0
 scikit-learn
