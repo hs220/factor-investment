@@ -28,7 +28,7 @@ def ssh_command(args: list[str], *, host: str | None = None, key_dir: str = KEY_
     """ssh argv for the forced command; ``args`` arrive as $SSH_ORIGINAL_COMMAND."""
     host = host or os.environ.get("TRAIN_SSH_HOST", "hsheng@192.168.68.76")
     return [
-        "ssh", "-i", f"{key_dir}/id_ed25519",
+        "ssh", "-T", "-i", f"{key_dir}/id_ed25519",   # -T: no pty (forced command)
         "-o", "BatchMode=yes",
         "-o", "IdentitiesOnly=yes",
         "-o", "StrictHostKeyChecking=yes",

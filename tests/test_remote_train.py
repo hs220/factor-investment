@@ -18,7 +18,7 @@ class _Log:
 
 def test_ssh_command_pins_key_and_host_key():
     cmd = remote_train.ssh_command(["--no-tune"], host="u@box", key_dir="/k")
-    assert cmd[:3] == ["ssh", "-i", "/k/id_ed25519"]
+    assert cmd[:4] == ["ssh", "-T", "-i", "/k/id_ed25519"]
     assert "StrictHostKeyChecking=yes" in cmd and "UserKnownHostsFile=/k/known_hosts" in cmd
     assert cmd[-3:] == ["--", "u@box", "--no-tune"]
 
