@@ -177,33 +177,35 @@ def panel_monthly(context) -> None:
 
 @asset(group_name="model", deps=[panel_monthly], compute_kind="lightgbm")
 def model_predictions(context) -> None:
-    """Walk-forward OOS scores -> predictions, + a deployment model artifact.
+    """Walk-forward OOS scores -> predictions, + a deployment model in model_registry.
 
-    Reads ``panel_monthly``, runs the (fixed-config) LightGBM walk-forward to
-    produce out-of-sample scores, writes them to the ``predictions`` table keyed
-    by the run's ``model_version``, and fits + persists a deployment model
-    artifact (``models/1m/<version>/``) for inference. Same code path as
-    ``pipelines/train.py`` (tuning off here — it's too heavy for the NAS; run a
-    tuned retrain off-box). The OOS IC is surfaced as asset metadata.
+    The NAS can't run the walk-forward (it starves the Dagster heartbeat), so this
+    step dials the training box over ssh (forced command -> ``docker run
+    factor-train``; see ``orchestration/remote_train.py``). The container runs the
+    same ``train_and_deploy`` as ``pipelines/train.py`` — tuned LightGBM — and
+    writes the OOS scores to ``predictions`` and the deployment artifact to
+    ``model_registry``; its log streams into this run. The OOS metrics are read
+    back from the registered manifest as asset metadata.
     """
-    from src.factors.panel import _feature_list
-    from src.models.training import train_and_deploy
+    from orchestration.remote_train import run_remote_training
 
-    panel = warehouse.load_panel_monthly()
-    res = train_and_deploy(
-        panel, _feature_list(), model_name="lightgbm", horizon="1m",
-        tune=False, save_model=True,
-    )
-    if res.oos_preds.empty or res.manifest is None:
-        raise Exception("training produced no predictions / no deployment model")
+    version = run_remote_training(context.log)
 
-    version = res.manifest.model_version
-    n = db.load_predictions(res.oos_preds, horizon="1m", model_version=version)
+    man = db.read_sql(
+        "SELECT manifest FROM model_registry WHERE model_version = :v", v=version
+    )["manifest"].iloc[0]
+    n = int(db.read_sql(
+        "SELECT count(*) AS n FROM predictions WHERE model_version = :v", v=version
+    )["n"].iloc[0])
+    oos = man["oos_metrics"]
     context.add_output_metadata({
         "model_version": version,
         "predictions_rows": n,
-        "oos_ic_mean": round(res.summary["ic_mean"], 4),
-        "oos_ic_ir": round(res.summary["ic_ir"], 3),
-        "oos_t_stat": round(res.summary["t_stat"], 2),
-        "oos_months": int(res.summary["n_months"]),
+        "code_sha": man["code_sha"],
+        "train_window": f"{man['train_start']} .. {man['train_end']}",
+        "hyperparams": {k: v for k, v in man["hyperparams"].items() if k != "enabled"},
+        "oos_ic_mean": round(oos["ic_mean"], 4),
+        "oos_ic_ir": round(oos["ic_ir"], 3),
+        "oos_t_stat": round(oos["t_stat"], 2),
+        "oos_hit_rate": round(oos["hit_rate"], 3),
     })

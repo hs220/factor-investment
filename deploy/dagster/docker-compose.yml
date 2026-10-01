@@ -14,10 +14,17 @@ x-dagster: &dagster
     DAGSTER_PG_HOST: ${DAGSTER_PG_HOST:-192.168.68.70}
     FACTOR_DB_HOST: ${FACTOR_DB_HOST:-192.168.68.70}
     FACTOR_DB_PORT: ${FACTOR_DB_PORT:-5433}
-  # Persist deployment model artifacts (models/<horizon>/<version>/) across
-  # container rebuilds; the model_predictions asset writes here, inference reads.
+    # Models are trained on the training box and served from the warehouse
+    # model_registry table (not this container's filesystem).
+    FACTOR_MODEL_STORE: db
+    TRAIN_SSH_HOST: ${TRAIN_SSH_HOST:-hsheng@192.168.68.76}
   volumes:
+    # Local fs model store (ad-hoc pipelines.train runs on the NAS only).
     - factor-models:/app/models
+    # Key that may ONLY run ~/factor-train/remote_train.sh on the training box
+    # (authorized_keys forced command) + its pinned host key. Created by
+    # deploy/train/setup_nas_key.sh; gitignored.
+    - ./train_ssh:/run/train_ssh:ro
   restart: unless-stopped
 
 services:

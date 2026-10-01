@@ -39,6 +39,20 @@ returns the same scores — so serving off the registry works. The container run
 Not yet done (Phase 2): the in-process `model_predictions` asset still trains on the NAS
 with the fs store; the dashboard/NAS must set `FACTOR_MODEL_STORE=db` when deployed.
 
+**Phase 2 design change (2026-09-30, user decision): forced-command SSH, not
+`PipesDockerClient`.** Pipes-over-remote-Docker needs the full Docker API over ssh — a
+root-equivalent key on the box, which would undercut the box's D12 isolation from the
+NAS. Instead the NAS holds a dedicated key (`deploy/dagster/train_ssh/`, gitignored,
+mounted read-only at `/run/train_ssh`) that the box's `authorized_keys` pins to
+`restrict,command="~/factor-train/remote_train.sh",from="192.168.68.70"`. That script
+allowlists `--model/--horizon/--no-tune` and execs `docker run --network host
+factor-train:latest`. `model_predictions` (`orchestration/remote_train.py`) runs the
+ssh, streams the container log into the Dagster run (4 h timeout, keepalives), parses
+the `registered <version>` line, then reads the manifest + prediction count back from
+the DB as asset metadata. A compromised NAS can only start a training run.
+Setup: `deploy/train/setup_nas_key.sh` (idempotent). Image updates stay manual:
+commit → `deploy/train/build.sh`. Wake-on-LAN dropped (the box is always on).
+
 ## Decision (locked with user)
 Keep **Dagster + Postgres on the NAS** as orchestrator + warehouse. The heavy
 training step runs in a **Docker container on the desktop**, launched by Dagster via

@@ -24,6 +24,7 @@ venv/
 # Secrets
 .env
 deploy/timescale/.env
+deploy/dagster/train_ssh/
 config/db.local.yaml
 
 # Trained model artifacts (deployment models + manifests)

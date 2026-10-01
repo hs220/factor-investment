@@ -244,7 +244,8 @@ def predictions_ic_positive() -> AssetCheckResult:
              FROM predictions p
              JOIN panel_monthly m ON m.date = p.date AND m.ticker = p.ticker
             WHERE p.model_version = (
-                    SELECT model_version FROM predictions ORDER BY date DESC LIMIT 1)
+                    SELECT model_version FROM model_registry WHERE horizon = '1m'
+                     ORDER BY created_at DESC LIMIT 1)
               AND m.forward_return IS NOT NULL"""
     )
     if df.empty:

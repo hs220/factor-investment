@@ -5,9 +5,10 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# libgomp1: OpenMP runtime required by LightGBM (model training asset).
+# libgomp1: OpenMP runtime for LightGBM (NAS-side inference / ad-hoc runs).
+# openssh-client: model_predictions launches training on the training box over ssh.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libgomp1 \
+    && apt-get install -y --no-install-recommends libgomp1 openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 # constraints-ml.txt pins the ML stack to the training image's versions so a

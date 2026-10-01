@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import os
+import warnings
 
 from src.config import load_config
 from src.data import db, warehouse
@@ -50,6 +51,9 @@ def _pipes():
 
 
 def main() -> None:
+    # The pipeline's imputer hands LightGBM a bare ndarray -> one harmless warning
+    # per fold, which would bury the run log streamed into Dagster.
+    warnings.filterwarnings("ignore", message="X does not have valid feature names")
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="lightgbm")
     ap.add_argument("--horizon", default="1m")

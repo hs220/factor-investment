@@ -45,9 +45,9 @@ monthly_job = define_asset_job(
 # The gold training matrix: rebuild after any ingest stage refreshes. Cheap pure
 # pandas over the warehouse; run monthly with the selection cadence.
 panel_job = define_asset_job("build_panel", selection=["panel_monthly"])
-# Monthly retrain: rebuild the panel, then run the (fixed-config) LightGBM
-# walk-forward -> predictions table + deployment artifact. Tractable on the NAS;
-# a tuned retrain is run off-box.
+# Retrain: rebuild the panel, then the tuned LightGBM walk-forward on the training
+# box (ssh forced command -> factor-train container) -> predictions table +
+# model_registry artifact. See plans/local-training.md.
 model_job = define_asset_job("model_train", selection=["panel_monthly", "model_predictions"])
 
 _TZ = "America/New_York"
