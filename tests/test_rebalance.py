@@ -70,3 +70,12 @@ def test_plan_holds_small_drift_and_skips_tiny_trades():
     plan, s = plan_rebalance(positions, 0.0, ranked, prices,
                              n_holdings=2, buffer_rank=10, max_weight=1.0)
     assert set(plan["action"]) == {"HOLD"} and s["turnover"] == 0
+
+
+def test_plan_never_buys_below_min_price():
+    ranked = _ranked()
+    prices = pd.Series(10.0, index=ranked["ticker"])
+    prices["R1"] = 2.0                                   # top-ranked but a penny stock now
+    plan, _ = plan_rebalance(pd.DataFrame(columns=["ticker", "shares"]), 10_000.0, ranked, prices,
+                             n_holdings=2, buffer_rank=10, max_weight=1.0)
+    assert plan.loc[plan.action == "BUY", "ticker"].tolist() == ["R2", "R3"]

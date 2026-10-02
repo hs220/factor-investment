@@ -8,6 +8,9 @@ live trades are the ones the reported performance assumes:
 - **ADD / TRIM** a kept holding only when its value drifted more than
   ``drift_band`` from the equal-weight target (avoids churning on small moves);
 - **HOLD** otherwise; trades smaller than ``min_trade`` dollars are skipped;
+- new **BUY**s must pass the live liquidity floor (``universe.liquidity_filters.
+  min_price``): the universe filter ran at ingestion, and a name can since have
+  fallen below $5 — still ranked, but not bought;
 - **REVIEW** holdings the model doesn't score (ETFs, names outside the
   investable universe) — never traded automatically, excluded from the sleeve.
 
@@ -61,7 +64,10 @@ def plan_rebalance(
 
     managed = [t for t in held.index if t in rank]
     sleeve = float(cash) + sum(held[t] * px(t) for t in managed if not math.isnan(px(t)))
-    keep, buy, sell = select_with_buffer(order, managed, n, buf)
+    # Buy candidates must be tradable today; held names keep their true rank.
+    min_price = load_config("data")["universe"]["liquidity_filters"]["min_price"]
+    buyable = [t for t in order if t in held.index or px(t) >= min_price]
+    keep, buy, sell = select_with_buffer(buyable, managed, n, buf)
     targets = keep + buy
     w = min(1.0 / len(targets), cap) if targets else 0.0
     target_value = w * sleeve
