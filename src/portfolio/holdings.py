@@ -106,15 +106,12 @@ def save_snapshot(positions: pd.DataFrame, cash: float, as_of: str | pd.Timestam
 
 def load_latest_snapshot() -> tuple[pd.DataFrame, float, pd.Timestamp | None]:
     """(positions, cash, as_of) of the newest snapshot; empty if none saved yet."""
-    from sqlalchemy.exc import ProgrammingError
-
     from src.data import db
 
     empty = pd.DataFrame(columns=["ticker", "shares", "cost_basis"])
-    try:
-        df = db.read_sql("SELECT * FROM holdings WHERE as_of = (SELECT max(as_of) FROM holdings)")
-    except ProgrammingError:          # table not created yet
-        return empty, 0.0, None
+    if db.read_sql("SELECT to_regclass('public.holdings') AS t")["t"].iloc[0] is None:
+        return empty, 0.0, None       # nothing uploaded yet: table not created
+    df = db.read_sql("SELECT * FROM holdings WHERE as_of = (SELECT max(as_of) FROM holdings)")
     if df.empty:
         return empty, 0.0, None
     cash = float(df.loc[df["ticker"] == CASH_TICKER, "shares"].sum())
