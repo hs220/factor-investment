@@ -24,8 +24,13 @@ if not data.ping():
     st.error("Database unreachable.")
     st.stop()
 
-n = st.slider("Holdings (top N)", 10, 100, value=data.n_holdings(), step=5)
-out = data.backtest(n_holdings=n)
+c1, c2 = st.columns(2)
+n = c1.slider("Holdings (top N)", 10, 100, value=data.n_holdings(), step=5)
+cost = c2.slider("Trading cost per side (bps: commission + half-spread + impact)", 0, 80,
+                 value=int(data.default_cost_bps()), step=1,
+                 help="Small/illiquid names often cost 20-40 bps per side all-in. The edge is "
+                      "sensitive to this because the strategy turns over ~half the book monthly.")
+out = data.backtest(n_holdings=n, cost_bps=float(cost))
 if out is None:
     st.warning("No model in `model_registry` yet. Run the `model_train` job.")
     st.stop()
@@ -35,7 +40,8 @@ s, b = res.strategy, res.benchmark
 
 st.caption(f"Model `{version}` · out-of-sample walk-forward scores · "
            f"{bt.index.min():%Y-%m} → {bt.index.max():%Y-%m} ({len(bt)} months) · "
-           "net of commission + half-spread costs · benchmark = equal-weight universe")
+           f"net of {cost} bps/side costs · hold-buffer rule as in live rebalancing · "
+           "benchmark = equal-weight universe")
 
 # --- Headline numbers ----------------------------------------------------------
 c = st.columns(5)

@@ -31,6 +31,7 @@ def run_strategy_backtest(
     *,
     n_holdings: int | None = None,
     buffer_rank: int | None = None,
+    cost_bps: float | None = None,
 ) -> BacktestResult:
     """Backtest the long-only top-N strategy on OOS ``predictions``.
 
@@ -44,6 +45,9 @@ def run_strategy_backtest(
     holdings = build_portfolio(preds, n_holdings=n_holdings, buffer_rank=buffer_rank)
     bt = engine.run_backtest(holdings, preds)
     bt["benchmark"] = engine.benchmark_return(preds)
+    if cost_bps is not None:   # override config costs: total bps per side (commission + spread)
+        bt["cost"] = bt["turnover"] * 2 * cost_bps / 10_000.0
+        bt["net"] = bt["gross"] - bt["cost"]
     # Predictions are keyed by formation date t, but forward_return is realized
     # over (t, t+1]. Re-key to the realization month so the series lines up with
     # calendar factor returns (attribution) and dates the equity curve correctly;

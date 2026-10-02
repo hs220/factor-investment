@@ -65,14 +65,20 @@ def feature_coverage(since: str = "2015-01-01") -> pd.Series:
 
 
 @st.cache_data(ttl=3600, show_spinner="Running backtest on OOS predictions…")
-def backtest(n_holdings: int | None = None, horizon: str = "1m") -> tuple[str, BacktestResult] | None:
+def backtest(n_holdings: int | None = None, cost_bps: float | None = None,
+             horizon: str = "1m") -> tuple[str, BacktestResult] | None:
     """(model_version, result) for the newest registered model; None if no model yet."""
     version = warehouse.latest_model_version(horizon)
     if version is None:
         return None
     preds = warehouse.load_oos_predictions(version, horizon)
     return version, run_strategy_backtest(preds, warehouse.load_ff_factors(),
-                                          n_holdings=n_holdings)
+                                          n_holdings=n_holdings, cost_bps=cost_bps)
+
+
+def default_cost_bps() -> float:
+    c = load_config("model")["costs"]
+    return float(c["commission_bps"] + c["spread_bps"])
 
 
 @st.cache_data(ttl=3600, show_spinner="Loading latest prices…")

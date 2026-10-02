@@ -86,3 +86,11 @@ def test_buffer_cuts_turnover_with_persistent_scores():
     no_buf = run_strategy_backtest(preds, n_holdings=10, buffer_rank=10).returns["turnover"].iloc[1:].mean()
     buf = run_strategy_backtest(preds, n_holdings=10, buffer_rank=25).returns["turnover"].iloc[1:].mean()
     assert buf < 0.6 * no_buf
+
+
+def test_cost_override_scales_with_turnover():
+    preds, _ = _preds()
+    a = run_strategy_backtest(preds, n_holdings=10, buffer_rank=10, cost_bps=0).returns
+    b = run_strategy_backtest(preds, n_holdings=10, buffer_rank=10, cost_bps=50).returns
+    assert (a["net"] == a["gross"]).all()
+    assert np.allclose(a["net"] - b["net"], b["turnover"] * 2 * 0.005)
