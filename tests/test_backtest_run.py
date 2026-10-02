@@ -27,7 +27,8 @@ def _preds(n_dates=24, n_names=60, live_month=True, seed=0):
 
 def test_backtest_excludes_unrealized_month_and_beats_benchmark():
     preds, dates = _preds()
-    res = run_strategy_backtest(preds, n_holdings=10)
+    # buffer off: synthetic scores are i.i.d. each month (no persistence to hold)
+    res = run_strategy_backtest(preds, n_holdings=10, buffer_rank=10)
     # live month dropped; rows keyed by realization month (formation + 1)
     assert list(res.returns.index) == list(dates + pd.offsets.MonthEnd(1))
     assert {"gross", "net", "cost", "turnover", "benchmark"} <= set(res.returns.columns)
@@ -61,3 +62,27 @@ def test_attribution_aligns_realization_month():
     factors[["SMB", "HML", "RMW", "CMA", "MOM"]] = rng.normal(scale=0.02, size=(61, 5))
     res = run_strategy_backtest(pd.concat(rows, ignore_index=True), factors, n_holdings=20)
     assert res.attribution["betas"]["Mkt-RF"] > 0.9 and res.attribution["r_squared"] > 0.9
+
+
+def test_select_with_buffer_keeps_in_buffer_and_fills_from_top():
+    from src.portfolio.construct import select_with_buffer
+
+    ranked = [f"R{i}" for i in range(1, 11)]            # R1 best
+    keep, buy, sell = select_with_buffer(ranked, {"R4", "R7", "R9", "ETF"}, n=3, buffer_rank=8)
+    assert keep == ["R4", "R7"]                          # inside the buffer, best first
+    assert buy == ["R1"]                                 # one free slot, best not held
+    assert sell == ["R9"]                                # fell outside the buffer
+    # ETF isn't ranked by the model: neither kept, bought nor sold
+
+
+def test_buffer_cuts_turnover_with_persistent_scores():
+    rng = np.random.default_rng(3)
+    dates = pd.date_range("2020-01-31", periods=36, freq="ME")
+    base = rng.normal(size=80)
+    rows = [pd.DataFrame({"date": d, "ticker": [f"T{i}" for i in range(80)],
+                          "pred": base + rng.normal(scale=0.5, size=80),     # persistent signal
+                          "forward_return": rng.normal(0.01, 0.05, size=80)}) for d in dates]
+    preds = pd.concat(rows, ignore_index=True)
+    no_buf = run_strategy_backtest(preds, n_holdings=10, buffer_rank=10).returns["turnover"].iloc[1:].mean()
+    buf = run_strategy_backtest(preds, n_holdings=10, buffer_rank=25).returns["turnover"].iloc[1:].mean()
+    assert buf < 0.6 * no_buf

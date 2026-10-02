@@ -30,6 +30,7 @@ def run_strategy_backtest(
     factors: pd.DataFrame | None = None,
     *,
     n_holdings: int | None = None,
+    buffer_rank: int | None = None,
 ) -> BacktestResult:
     """Backtest the long-only top-N strategy on OOS ``predictions``.
 
@@ -40,7 +41,7 @@ def run_strategy_backtest(
     realized = predictions.groupby("date")["forward_return"].transform("count") > 0
     preds = predictions[realized]
 
-    holdings = build_portfolio(preds, n_holdings=n_holdings)
+    holdings = build_portfolio(preds, n_holdings=n_holdings, buffer_rank=buffer_rank)
     bt = engine.run_backtest(holdings, preds)
     bt["benchmark"] = engine.benchmark_return(preds)
     # Predictions are keyed by formation date t, but forward_return is realized

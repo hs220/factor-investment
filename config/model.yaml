@@ -62,6 +62,10 @@ evaluation:
 
 portfolio:
   n_holdings: 30               # top-N names
+  # Hold-buffer: a current holding is kept while its rank stays <= buffer_rank;
+  # only freed slots are refilled from the top. Cuts turnover (and costs) vs
+  # rebuilding a fresh top-N every month. buffer_rank == n_holdings disables it.
+  buffer_rank: 60
   sector_neutral: true
   max_position_weight: 0.08    # cap any single name
   rebalance: "monthly"
