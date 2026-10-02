@@ -125,3 +125,13 @@ def load_oos_predictions(model_version: str, horizon: str = "1m") -> pd.DataFram
         v=model_version, h=horizon)
     df["date"] = pd.to_datetime(df["date"])
     return df.sort_values(["date", "ticker"]).reset_index(drop=True)
+
+
+def latest_closes(tickers: list[str] | None = None) -> pd.Series:
+    """Most recent daily close per ticker (``prices_daily``), for sizing trades."""
+    df = db.read_sql(
+        """SELECT DISTINCT ON (ticker) ticker, close FROM prices_daily
+            WHERE date >= (SELECT max(date) FROM prices_daily) - INTERVAL '10 days'
+            ORDER BY ticker, date DESC""")
+    s = df.set_index("ticker")["close"]
+    return s.reindex(tickers) if tickers is not None else s

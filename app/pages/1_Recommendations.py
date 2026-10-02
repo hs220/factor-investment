@@ -7,10 +7,13 @@ for _p in (str(_root), str(_root / "app")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+import pandas as pd
 import plotly.express as px
 import streamlit as st
 
 from lib import data
+from src.portfolio.holdings import parse_positions_csv, save_snapshot
+from src.portfolio.rebalance import plan_rebalance
 
 st.set_page_config(page_title="Recommendations", page_icon="📈", layout="wide")
 st.title("Recommendations")
@@ -63,3 +66,55 @@ with right:
 st.caption("Scores are within-sector cross-sectional rank predictions; features shown "
            "are normalized ranks in [0,1]. Long-only selection caps/weights are applied "
            "in the portfolio stage.")
+
+st.divider()
+
+# --- Rebalance actions against the current portfolio --------------------------
+st.subheader("Rebalance actions")
+st.caption("Compares your current Roth IRA holdings with the model's ranking using the same "
+           "hold-buffer rule as the backtest: sell names that fell out of the buffer, buy the "
+           "top-ranked names you don't own, resize only on large drift.")
+
+with st.expander("Upload current positions (broker CSV export)",
+                 expanded=data.holdings()[2] is None):
+    up = st.file_uploader("Positions CSV (Schwab, Fidelity, … — needs Symbol + Quantity columns)",
+                          type="csv")
+    if up is not None:
+        try:
+            pos_new, cash_new = parse_positions_csv(up.getvalue())
+        except ValueError as exc:
+            st.error(f"Couldn't read that file: {exc}")
+        else:
+            st.write(f"Parsed **{len(pos_new)} positions** and **${cash_new:,.2f} cash**:")
+            st.dataframe(pos_new, width="stretch", hide_index=True)
+            if st.button("Save as current holdings", type="primary"):
+                save_snapshot(pos_new, cash_new, pd.Timestamp.today())
+                st.success("Saved.")
+                st.rerun()
+
+positions, cash, held_asof = data.holdings()
+if held_asof is None:
+    st.info("No holdings saved yet — upload a positions export above to get buy/sell actions.")
+    st.stop()
+
+plan, summ = plan_rebalance(positions, cash, ranked, data.latest_closes())
+k = st.columns(5)
+k[0].metric("Strategy sleeve", f"${summ['sleeve_value']:,.0f}")
+k[1].metric("Sell", summ.get("n_sell", 0))
+k[2].metric("Buy", summ.get("n_buy", 0))
+k[3].metric("Est. turnover", f"{summ.get('turnover', 0):.0%}")
+k[4].metric("Est. cost", f"${summ.get('est_cost', 0):,.0f}")
+st.caption(f"Holdings as of {held_asof.date()} · model `{manifest.model_version}` · scores as of "
+           f"{asof.date()} · target ≈ ${summ.get('target_per_name', 0):,.0f} per name · "
+           f"cash after trades ≈ ${summ.get('cash_after', 0):,.0f}")
+
+show = plan[["action", "ticker", "sector", "rank", "price", "current_shares", "trade_shares",
+             "target_shares", "trade_value", "reason"]]
+st.dataframe(show, width="stretch", hide_index=True, column_config={
+    "price": st.column_config.NumberColumn(format="$%.2f"),
+    "trade_value": st.column_config.NumberColumn("trade $", format="$%.0f"),
+})
+st.download_button("Download trade list (CSV)", show.to_csv(index=False).encode(),
+                   file_name=f"rebalance_{asof.date()}.csv", mime="text/csv")
+st.caption("Advisory only — review before placing orders. Whole shares; REVIEW rows "
+           "(ETFs / names the model doesn't score) are never traded automatically.")

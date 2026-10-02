@@ -73,3 +73,14 @@ def backtest(n_holdings: int | None = None, horizon: str = "1m") -> tuple[str, B
     preds = warehouse.load_oos_predictions(version, horizon)
     return version, run_strategy_backtest(preds, warehouse.load_ff_factors(),
                                           n_holdings=n_holdings)
+
+
+@st.cache_data(ttl=3600, show_spinner="Loading latest prices…")
+def latest_closes() -> pd.Series:
+    return warehouse.latest_closes()
+
+
+def holdings():
+    """(positions, cash, as_of) of the newest saved snapshot (uncached: user-edited)."""
+    from src.portfolio.holdings import load_latest_snapshot
+    return load_latest_snapshot()
