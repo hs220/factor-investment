@@ -43,7 +43,7 @@ def prices_table(context) -> None:
 
     last = db.read_sql("SELECT MAX(date) AS d FROM prices")["d"].iloc[0]
     if last is not None:
-        start = (pd.Timestamp(last) - pd.offsets.MonthBegin(2)).strftime("%Y-%m-%d")
+        start = prices.incremental_start(pd.Timestamp(last), pd.Timestamp(end)).strftime("%Y-%m-%d")
 
     close = prices.download_prices(tickers, start, end, field="Close")
     volume = prices.download_prices(tickers, start, end, field="Volume")

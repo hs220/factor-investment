@@ -195,6 +195,26 @@ def to_monthly_returns(daily_prices: pd.DataFrame) -> pd.DataFrame:
     return to_monthly_close(daily_prices).pct_change().dropna(how="all")
 
 
+def incremental_start(
+    last_stored: pd.Timestamp | None, today: pd.Timestamp, *, adv_window: int = 60,
+    full_start: str = "2000-01-01",
+) -> pd.Timestamp:
+    """First date to download for an incremental prices run.
+
+    Must cover BOTH (a) a 2-month overlap with stored history (seam detection
+    and late revisions) and (b) the liquidity filter's ``adv_window``-trading-day
+    dollar-volume lookback. Only (a) was used before: right after a month rollover
+    the window shrank to ~23 trading days, every ticker's ADV was NaN, and the
+    investable set collapsed (2026-09-04: ~50 names; 2026-10-05: 0, blocked by the
+    set_active guard).
+    """
+    if last_stored is None:
+        return pd.Timestamp(full_start)
+    overlap = pd.Timestamp(last_stored) - pd.offsets.MonthBegin(2)
+    lookback = pd.Timestamp(today) - pd.Timedelta(days=int(adv_window * 7 / 5) + 21)  # + holidays
+    return min(overlap, lookback)
+
+
 def avg_dollar_volume(
     daily_close: pd.DataFrame, daily_volume: pd.DataFrame, window: int = 60
 ) -> pd.Series:

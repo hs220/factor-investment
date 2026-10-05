@@ -59,3 +59,17 @@ def test_find_rebased_flags_seam_not_partial_month():
     new = pd.DataFrame({"OK": [10.0, 11.0, 13.5],            # only the partial month moved
                         "SPLIT": [10.0, 11.0, 12.0]}, index=idx)  # 1:10 re-adjusted history
     assert find_rebased(new, stored, before=idx[-1]) == ["SPLIT"]
+
+
+
+def test_incremental_start_covers_adv_lookback_after_rollover():
+    import pandas as pd
+
+    from src.data.prices import incremental_start
+
+    # 2026-10-05: newest stored bar is the partial-October month-end
+    start = incremental_start(pd.Timestamp("2026-10-31"), pd.Timestamp("2026-10-05"))
+    trading_days = len(pd.bdate_range(start, "2026-10-02"))
+    assert trading_days >= 60                          # full ADV window, not ~23 days
+    assert start <= pd.Timestamp("2026-09-01")         # still overlaps 2 stored months
+    assert incremental_start(None, pd.Timestamp("2026-10-05")) == pd.Timestamp("2000-01-01")
