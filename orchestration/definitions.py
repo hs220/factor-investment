@@ -33,6 +33,8 @@ _ALL = [
     assets.macro,
     assets.panel_monthly,
     assets.model_predictions,
+    assets.recommendations,
+    assets.strategy_backtest,
 ]
 
 daily_job = define_asset_job(
@@ -47,8 +49,13 @@ monthly_job = define_asset_job(
 panel_job = define_asset_job("build_panel", selection=["panel_monthly"])
 # Retrain: rebuild the panel, then the tuned LightGBM walk-forward on the training
 # box (ssh forced command -> factor-train container) -> predictions table +
-# model_registry artifact. See plans/local-training.md.
-model_job = define_asset_job("model_train", selection=["panel_monthly", "model_predictions"])
+# model_registry artifact. See plans/local-training.md. Then persist what the
+# dashboard computes on view (the live ranking, the backtest) for readers that
+# have no model: home-agent's read-only connector.
+model_job = define_asset_job(
+    "model_train",
+    selection=["panel_monthly", "model_predictions", "recommendations", "strategy_backtest"],
+)
 
 _TZ = "America/New_York"
 defs = Definitions(
