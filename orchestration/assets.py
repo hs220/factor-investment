@@ -242,3 +242,52 @@ def model_predictions(context) -> None:
         "oos_t_stat": round(oos["t_stat"], 2),
         "oos_hit_rate": round(oos["hit_rate"], 3),
     })
+
+
+@asset(group_name="serving", deps=[model_predictions], compute_kind="lightgbm")
+def recommendations(context) -> None:
+    """The deployed model's ranking of the latest cross-section -> recommendations.
+
+    What the dashboard's Recommendations page computes on view
+    (``latest_recommendations``), persisted so a reader without the model can
+    see it: home-agent's read-only connector, and next month's comparison.
+    Only the newest panel month is read — that is all it scores.
+    """
+    from src.serving.recommend import latest_recommendations
+
+    latest = db.read_sql(
+        "SELECT * FROM panel_monthly WHERE date = (SELECT max(date) FROM panel_monthly)")
+    latest["date"] = pd.to_datetime(latest["date"])
+    ranked, manifest, asof = latest_recommendations(horizon="1m", panel=latest)
+    n = db.load_recommendations(ranked, manifest.model_version, asof)
+    context.add_output_metadata({
+        "as_of": str(asof.date()), "model_version": manifest.model_version, "rows": n,
+    })
+
+
+@asset(group_name="serving", deps=[model_predictions], compute_kind="pandas")
+def strategy_backtest(context) -> None:
+    """The newest model's OOS backtest at the config defaults -> strategy_backtest
+    + strategy_returns. The same ``run_strategy_backtest`` as the Performance page
+    and ``pipelines/backtest.py``, with the parameters it ran at stored beside it."""
+    from src.backtest.run import run_strategy_backtest
+
+    version = warehouse.latest_model_version("1m")
+    if version is None:
+        raise Exception("no model in model_registry; run model_train first")
+    preds = warehouse.load_oos_predictions(version, "1m")
+    res = run_strategy_backtest(preds, warehouse.load_ff_factors())
+    cfg = load_config("model")
+    pcfg, costs = cfg["portfolio"], cfg["costs"]
+    params = {
+        "n_holdings": pcfg["n_holdings"],
+        "buffer_rank": max(pcfg.get("buffer_rank", pcfg["n_holdings"]), pcfg["n_holdings"]),
+        "cost_bps": costs["commission_bps"] + costs["spread_bps"],
+        "min_price": load_config("data")["universe"]["liquidity_filters"]["min_price"],
+    }
+    n = db.load_strategy_backtest(version, res, params)
+    meta = {"model_version": version, "months": n}
+    if res.strategy:
+        meta["ann_return_net"] = round(float(res.strategy["ann_return"]), 4)
+        meta["sharpe"] = round(float(res.strategy["sharpe"]), 3)
+    context.add_output_metadata(meta)
