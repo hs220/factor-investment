@@ -77,6 +77,20 @@ def upsert(df: pd.DataFrame, table: str, conflict: list[str], *, chunksize: int 
     """
     if df.empty:
         return 0
+    raw = get_engine().raw_connection()
+    try:
+        with raw.cursor() as cur:
+            n = _upsert_rows(cur, df, table, conflict, chunksize=chunksize)
+        raw.commit()
+    finally:
+        raw.close()
+    return n
+
+
+def _upsert_rows(cur, df: pd.DataFrame, table: str, conflict: list[str], *,
+                 chunksize: int = 10000) -> int:
+    """``upsert``'s INSERT ... ON CONFLICT on a cursor the caller holds, so it
+    can share a transaction with other statements (commit is the caller's)."""
     from psycopg2.extras import execute_values
 
     cols = list(df.columns)
@@ -92,15 +106,8 @@ def upsert(df: pd.DataFrame, table: str, conflict: list[str], *, chunksize: int 
 
     # NaN/NaT -> None for SQL NULL; rows as plain tuples.
     records = to_records(df)
-
-    raw = get_engine().raw_connection()
-    try:
-        with raw.cursor() as cur:
-            for i in range(0, len(records), chunksize):
-                execute_values(cur, sql, records[i : i + chunksize], page_size=1000)
-        raw.commit()
-    finally:
-        raw.close()
+    for i in range(0, len(records), chunksize):
+        execute_values(cur, sql, records[i : i + chunksize], page_size=1000)
     return len(records)
 
 
@@ -441,13 +448,38 @@ CREATE INDEX IF NOT EXISTS idx_model_registry_horizon
 """
 
 
+# home-agent's read-only role (scripts/create_reader.sh) may read everything
+# here but the serialized model. Its default privileges grant SELECT on every
+# new table, so a (re)created model_registry would hand it ``artifact`` too;
+# re-apply the column grant every time the table is ensured. The script also
+# installs an event trigger doing the same on any CREATE TABLE of it, for code
+# paths that create the table without coming through here.
+READER_ROLE = "home_agent_reader"
+# Also named in scripts/create_reader.sh (its grant and its event trigger). If
+# model_registry drops or renames one of these, update both places first: the
+# trigger's GRANT would otherwise fail every CREATE or ALTER of the table.
+READER_REGISTRY_COLUMNS = ("model_version", "horizon", "model_name", "manifest", "created_at")
+_READER_COLS = ", ".join(READER_REGISTRY_COLUMNS)
+_REGISTRY_READER_GRANT = f"""
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{READER_ROLE}') THEN
+    REVOKE SELECT ON model_registry FROM {READER_ROLE};
+    GRANT SELECT ({_READER_COLS}) ON model_registry TO {READER_ROLE};
+  END IF;
+END $$
+"""
+
+
 def ensure_model_registry_table() -> None:
-    """Create the ``model_registry`` table + index if absent."""
+    """Create the ``model_registry`` table + index if absent, and keep the
+    read-only reader off its ``artifact`` column."""
     from sqlalchemy import text
 
     with get_engine().begin() as conn:
         for stmt in filter(str.strip, _MODEL_REGISTRY_DDL.split(";")):
             conn.execute(text(stmt))
+        conn.execute(text(_REGISTRY_READER_GRANT))
 
 
 def save_model_registry(manifest: dict, artifact: bytes) -> None:
@@ -526,3 +558,160 @@ def set_active(active_tickers: list[str], *, min_keep_frac: float = 0.5) -> int:
     finally:
         raw.close()
     return len(active)
+
+
+# Serving snapshots: what the dashboard computes on view, persisted after each
+# retrain so a reader without the model or the Python stack (home-agent's
+# read-only `factor` connector) sees the same numbers. Written by the
+# ``recommendations`` and ``strategy_backtest`` Dagster assets.
+_SERVING_DDL = """
+CREATE TABLE IF NOT EXISTS recommendations (
+    as_of          date NOT NULL,        -- panel cross-section scored (month-end label)
+    model_version  text NOT NULL,
+    rank           integer NOT NULL,     -- 1 = best
+    ticker         text NOT NULL,
+    gics_sector    text,
+    score          double precision,
+    scored_at      timestamptz NOT NULL,
+    PRIMARY KEY (as_of, model_version, ticker)
+);
+CREATE TABLE IF NOT EXISTS strategy_backtest (
+    model_version  text PRIMARY KEY,
+    computed_at    timestamptz NOT NULL,
+    n_holdings     integer NOT NULL,
+    buffer_rank    integer NOT NULL,
+    cost_bps       double precision NOT NULL,   -- per side: commission + half-spread
+    min_price      double precision,            -- the live buy floor (rebalancing)
+    max_position_weight double precision,       -- the per-name weight cap
+    first_month    date,
+    last_month     date,
+    n_months       integer,
+    avg_turnover   double precision,
+    strategy       jsonb NOT NULL,   -- performance_summary of net returns
+    benchmark      jsonb NOT NULL,   -- performance_summary of the equal-weight universe
+    attribution    jsonb NOT NULL    -- FF5+MOM alpha/betas/t-stats/R², or {"error": ...}
+);
+ALTER TABLE strategy_backtest ADD COLUMN IF NOT EXISTS max_position_weight double precision;
+CREATE TABLE IF NOT EXISTS strategy_returns (
+    model_version  text NOT NULL,
+    month          date NOT NULL,     -- REALIZATION month-end
+    gross          double precision,
+    cost           double precision,
+    net            double precision,
+    benchmark      double precision,
+    turnover       double precision,
+    PRIMARY KEY (model_version, month)
+);
+"""
+
+
+def ensure_serving_tables() -> None:
+    """Create the serving-snapshot tables if absent."""
+    from sqlalchemy import text
+
+    with get_engine().begin() as conn:
+        for stmt in filter(str.strip, _SERVING_DDL.split(";")):
+            conn.execute(text(stmt))
+
+
+def load_recommendations(ranked: pd.DataFrame, model_version: str,
+                         asof: pd.Timestamp) -> int:
+    """Upsert one scored cross-section (best-first, ``pred`` column) ->
+    recommendations, ranked 1..n in the order given."""
+    if ranked.empty:
+        return 0
+    df = pd.DataFrame({
+        "as_of": pd.Timestamp(asof).date(),
+        "model_version": model_version,
+        "rank": range(1, len(ranked) + 1),
+        "ticker": ranked["ticker"].to_numpy(),
+        "gics_sector": (ranked["gics_sector"].to_numpy()
+                        if "gics_sector" in ranked else None),
+        "score": ranked["pred"].to_numpy(),
+        "scored_at": pd.Timestamp.now(tz="UTC"),
+    })
+    ensure_serving_tables()
+    from sqlalchemy import text
+
+    # Replace the whole (as_of, model_version) ranking in one transaction: a
+    # rebuilt cross-section must not leave the names it dropped behind with
+    # their old ranks, and a reader must never see half of either.
+    with get_engine().begin() as conn:
+        conn.execute(
+            text("DELETE FROM recommendations WHERE as_of = :a AND model_version = :v"),
+            {"a": pd.Timestamp(asof).date(), "v": model_version},
+        )
+        with conn.connection.cursor() as cur:
+            return _upsert_rows(cur, df, "recommendations",
+                                ["as_of", "model_version", "ticker"])
+
+
+def _jsonable(d: dict) -> dict:
+    """Floats only (numpy scalars -> float, NaN -> None), nested dicts kept;
+    DataFrame values (attribution's coef_table) dropped."""
+    out = {}
+    for k, v in d.items():
+        if isinstance(v, dict):
+            out[k] = _jsonable(v)
+        elif isinstance(v, pd.DataFrame):
+            continue
+        elif isinstance(v, str):
+            out[k] = v
+        else:
+            f = float(v)
+            out[k] = None if f != f else f
+    return out
+
+
+def load_strategy_backtest(model_version: str, result, params: dict) -> int:
+    """Persist a ``BacktestResult`` for one model: the summary row (with the
+    parameters it ran at) -> strategy_backtest, monthly rows -> strategy_returns.
+    All in one transaction, so a reader never sees a summary without its months."""
+    import json
+
+    from sqlalchemy import text
+
+    bt = result.returns
+    ensure_serving_tables()
+    row = {
+        "v": model_version,
+        "n": int(params["n_holdings"]), "buf": int(params["buffer_rank"]),
+        "cost": float(params["cost_bps"]), "minp": params.get("min_price"),
+        "maxw": params.get("max_position_weight"),
+        "first": bt.index.min().date() if len(bt) else None,
+        "last": bt.index.max().date() if len(bt) else None,
+        "months": int(len(bt)),
+        "tov": float(bt["turnover"].mean()) if len(bt) else None,
+        "s": json.dumps(_jsonable(result.strategy)),
+        "b": json.dumps(_jsonable(result.benchmark)),
+        "a": json.dumps(_jsonable(result.attribution)),
+    }
+    monthly = bt[["gross", "cost", "net", "benchmark", "turnover"]].copy()
+    monthly.insert(0, "month", pd.to_datetime(bt.index).date)
+    monthly.insert(0, "model_version", model_version)
+    with get_engine().begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO strategy_backtest (model_version, computed_at, n_holdings, "
+                "buffer_rank, cost_bps, min_price, max_position_weight, first_month, "
+                "last_month, n_months, avg_turnover, strategy, benchmark, attribution) "
+                "VALUES (:v, now(), :n, :buf, :cost, :minp, :maxw, :first, :last, :months, "
+                ":tov, CAST(:s AS jsonb), CAST(:b AS jsonb), CAST(:a AS jsonb)) "
+                "ON CONFLICT (model_version) DO UPDATE SET computed_at = now(), "
+                "n_holdings = EXCLUDED.n_holdings, buffer_rank = EXCLUDED.buffer_rank, "
+                "cost_bps = EXCLUDED.cost_bps, min_price = EXCLUDED.min_price, "
+                "max_position_weight = EXCLUDED.max_position_weight, "
+                "first_month = EXCLUDED.first_month, last_month = EXCLUDED.last_month, "
+                "n_months = EXCLUDED.n_months, avg_turnover = EXCLUDED.avg_turnover, "
+                "strategy = EXCLUDED.strategy, benchmark = EXCLUDED.benchmark, "
+                "attribution = EXCLUDED.attribution"
+            ),
+            row,
+        )
+        conn.execute(text("DELETE FROM strategy_returns WHERE model_version = :v"),
+                     {"v": model_version})
+        if monthly.empty:
+            return 0
+        with conn.connection.cursor() as cur:
+            return _upsert_rows(cur, monthly.reset_index(drop=True), "strategy_returns",
+                                ["model_version", "month"])
