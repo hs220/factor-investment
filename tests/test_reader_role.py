@@ -159,6 +159,20 @@ def test_the_reader_role_end_to_end(pg, warehouse_env):
     assert pg.reader("SELECT artifact FROM model_registry;", pw).returncode != 0
     assert pg.reader("SELECT model_version FROM model_registry;", pw).stdout.strip() == "v2"
 
+    # Renamed into place (or moved in by SET SCHEMA): ALTER TABLE fires it too.
+    pg.admin("CREATE TABLE model_registry_new (model_version text PRIMARY KEY, horizon text, "
+             "model_name text, manifest jsonb, artifact bytea, created_at timestamptz);")
+    assert pg.admin(f"SELECT has_column_privilege('{ROLE}', 'public.model_registry_new', "
+                    "'artifact', 'SELECT')") == "t"      # default privileges, as expected
+    pg.admin("DROP TABLE model_registry; ALTER TABLE model_registry_new RENAME TO model_registry;")
+    assert not pg.can_read_artifact()
+    assert pg.reader("SELECT artifact FROM model_registry;", pw).returncode != 0
+    # Unrelated ALTERs still work, and one on the registry keeps the column list.
+    pg.admin("ALTER TABLE universe ADD COLUMN _probe int; ALTER TABLE universe DROP COLUMN _probe;")
+    pg.admin("ALTER TABLE model_registry ADD COLUMN note text;")
+    assert not pg.can_read_artifact()
+    pg.admin("ALTER TABLE model_registry DROP COLUMN note;")
+
     # And without the trigger, through the app's own path: ensure re-applies it.
     pg.admin("DROP EVENT TRIGGER home_agent_reader_registry_guard; DROP TABLE model_registry;")
     db.ensure_model_registry_table()

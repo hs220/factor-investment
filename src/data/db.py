@@ -455,6 +455,9 @@ CREATE INDEX IF NOT EXISTS idx_model_registry_horizon
 # installs an event trigger doing the same on any CREATE TABLE of it, for code
 # paths that create the table without coming through here.
 READER_ROLE = "home_agent_reader"
+# Also named in scripts/create_reader.sh (its grant and its event trigger). If
+# model_registry drops or renames one of these, update both places first: the
+# trigger's GRANT would otherwise fail every CREATE or ALTER of the table.
 READER_REGISTRY_COLUMNS = ("model_version", "horizon", "model_name", "manifest", "created_at")
 _READER_COLS = ", ".join(READER_REGISTRY_COLUMNS)
 _REGISTRY_READER_GRANT = f"""

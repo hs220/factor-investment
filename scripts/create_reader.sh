@@ -24,7 +24,8 @@
 #     model_registry's `artifact` column: the serialized model is no reader's
 #     business. model_registry must exist before this runs. An event trigger
 #     (and db.ensure_model_registry_table()) withholds the column again if the
-#     table is ever created anew, which default privileges would otherwise open;
+#     table is ever created anew or another table is renamed into its place,
+#     which default privileges would otherwise open;
 #   - in the `dagster` database, only these columns:
 #       runs: run_id, pipeline_name, status, start_time, end_time, create_timestamp
 #       asset_check_executions: asset_key, check_name, run_id, execution_status,
@@ -100,30 +101,37 @@ ALTER DEFAULT PRIVILEGES FOR ROLE $PGUSER_ IN SCHEMA public GRANT SELECT ON TABL
 
 -- model_registry: everything but the serialized model. A table-wide SELECT
 -- would cover every column, so it is replaced by a column list.
+-- The same five columns are named in the trigger below and in
+-- src/data/db.py (READER_REGISTRY_COLUMNS). If model_registry ever drops or
+-- renames one of them, update all three first: until then the trigger's GRANT
+-- fails, and with it every CREATE or ALTER of model_registry.
 REVOKE SELECT ON model_registry FROM $ROLE;
 GRANT SELECT (model_version, horizon, model_name, manifest, created_at)
   ON model_registry TO $ROLE;
 
 -- ... and kept that way if the table is ever created again, by any code path
--- (an older training image included): the default privileges above would
--- otherwise grant the new table's every column. Fires on CREATE TABLE in this
--- database; the table's creator owns it, so may revoke.
+-- (an older training image included), or another table is renamed or moved
+-- into its place: the default privileges above would otherwise grant the new
+-- table's every column. Fires on CREATE TABLE and ALTER TABLE (RENAME, SET
+-- SCHEMA) in this database and returns at once for any other table; the
+-- table's owner runs the DDL, so may revoke.
 CREATE OR REPLACE FUNCTION public.home_agent_reader_registry_guard()
 RETURNS event_trigger LANGUAGE plpgsql AS \$\$
-DECLARE obj record;
 BEGIN
-  FOR obj IN SELECT * FROM pg_event_trigger_ddl_commands() LOOP
-    IF obj.object_type = 'table' AND obj.object_identity = 'public.model_registry'
-       AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '$ROLE') THEN
-      EXECUTE 'REVOKE SELECT ON public.model_registry FROM $ROLE';
-      EXECUTE 'GRANT SELECT (model_version, horizon, model_name, manifest, created_at) '
-              'ON public.model_registry TO $ROLE';
-    END IF;
-  END LOOP;
+  IF NOT EXISTS (SELECT 1 FROM pg_event_trigger_ddl_commands()
+                  WHERE object_type = 'table'
+                    AND object_identity = 'public.model_registry') THEN
+    RETURN;  -- any other table: nothing to do
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '$ROLE') THEN
+    EXECUTE 'REVOKE SELECT ON public.model_registry FROM $ROLE';
+    EXECUTE 'GRANT SELECT (model_version, horizon, model_name, manifest, created_at) '
+            'ON public.model_registry TO $ROLE';
+  END IF;
 END \$\$;
 DROP EVENT TRIGGER IF EXISTS home_agent_reader_registry_guard;
 CREATE EVENT TRIGGER home_agent_reader_registry_guard ON ddl_command_end
-  WHEN TAG IN ('CREATE TABLE', 'CREATE TABLE AS', 'SELECT INTO')
+  WHEN TAG IN ('CREATE TABLE', 'CREATE TABLE AS', 'SELECT INTO', 'ALTER TABLE')
   EXECUTE FUNCTION public.home_agent_reader_registry_guard();
 SQL
 
