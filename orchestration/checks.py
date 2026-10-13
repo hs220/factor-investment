@@ -336,6 +336,61 @@ def macro_fresh() -> AssetCheckResult:
     )
 
 
+# --------------------------------------------------------------------------- #
+# serving snapshots (read by home-agent's `factor` connector)
+# --------------------------------------------------------------------------- #
+_NEWEST_MODEL = ("(SELECT model_version FROM model_registry WHERE horizon = '1m' "
+                 "ORDER BY created_at DESC, model_version DESC LIMIT 1)")
+
+
+@asset_check(asset=assets.recommendations,
+             description="newest ranking is the deployed model's, ranked 1..n once each")
+def recommendations_current() -> AssetCheckResult:
+    row = db.read_sql(
+        f"""SELECT r.as_of::text AS as_of, r.model_version,
+                  r.model_version = {_NEWEST_MODEL} AS current,
+                  count(*) AS n, count(DISTINCT rank) AS ranks, min(rank) AS lo,
+                  max(rank) AS hi
+             FROM recommendations r
+            WHERE (r.as_of, r.model_version) = (
+                    SELECT as_of, model_version FROM recommendations
+                     GROUP BY as_of, model_version
+                     ORDER BY as_of DESC, max(scored_at) DESC LIMIT 1)
+            GROUP BY r.as_of, r.model_version"""
+    )
+    if row.empty:
+        return AssetCheckResult(passed=False, severity=AssetCheckSeverity.WARN,
+                                metadata={"rows": 0})
+    r = row.iloc[0]
+    n = int(r["n"])
+    ok = bool(r["current"]) and int(r["ranks"]) == n and int(r["lo"]) == 1 and int(r["hi"]) == n
+    return AssetCheckResult(
+        passed=ok, severity=AssetCheckSeverity.WARN,
+        metadata={"as_of": r["as_of"], "model_version": r["model_version"],
+                  "deployed_model": bool(r["current"]), "rows": n},
+    )
+
+
+@asset_check(asset=assets.strategy_backtest,
+             description="a backtest for the deployed model, with all its monthly rows")
+def strategy_backtest_current() -> AssetCheckResult:
+    row = db.read_sql(
+        f"""SELECT b.n_months,
+                  (SELECT count(*) FROM strategy_returns s
+                    WHERE s.model_version = b.model_version) AS months_stored
+             FROM strategy_backtest b WHERE b.model_version = {_NEWEST_MODEL}"""
+    )
+    if row.empty:
+        return AssetCheckResult(passed=False, severity=AssetCheckSeverity.WARN,
+                                metadata={"deployed_model_backtest": False})
+    r = row.iloc[0]
+    return AssetCheckResult(
+        passed=int(r["n_months"]) == int(r["months_stored"]),
+        severity=AssetCheckSeverity.WARN,
+        metadata={"n_months": int(r["n_months"]), "months_stored": int(r["months_stored"])},
+    )
+
+
 ALL_CHECKS = [
     universe_active_band,
     universe_sector_coverage,
@@ -357,4 +412,6 @@ ALL_CHECKS = [
     predictions_ic_positive,
     ff_factors_fresh,
     macro_fresh,
+    recommendations_current,
+    strategy_backtest_current,
 ]

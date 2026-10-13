@@ -15,34 +15,60 @@ from src.data import db
 
 @pytest.fixture
 def sink(monkeypatch):
-    """Captures what would be upserted and executed, instead of a database."""
-    seen: dict = {"upserts": {}, "sql": []}
+    """Records each transaction's statements and row writes, in order, instead
+    of a database. ``seen["tx"]`` is one list per ``engine.begin()`` block."""
+    seen: dict = {"tx": [], "commits": 0}
 
-    def upsert(df, table, conflict, **_):
-        seen["upserts"][table] = (df.copy(), conflict)
+    def upsert_rows(cur, df, table, conflict, **_):
+        cur.tx.append(("rows", table, df.copy(), conflict))
         return len(df)
 
+    class Cursor:
+        def __init__(self, tx):
+            self.tx = tx
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
     class Conn:
+        def __init__(self, tx):
+            self.tx = tx
+            self.connection = self
+
         def execute(self, stmt, params=None):
-            seen["sql"].append((str(stmt), params))
+            self.tx.append(("sql", str(stmt), params))
+
+        def cursor(self):
+            return Cursor(self.tx)
 
     class Engine:
         @contextmanager
         def begin(self):
-            yield Conn()
+            tx: list = []
+            seen["tx"].append(tx)
+            yield Conn(tx)
+            seen["commits"] += 1
 
-    monkeypatch.setattr(db, "upsert", upsert)
+    monkeypatch.setattr(db, "_upsert_rows", upsert_rows)
     monkeypatch.setattr(db, "ensure_serving_tables", lambda: None)
     monkeypatch.setattr(db, "get_engine", lambda: Engine())
     return seen
 
 
-def test_recommendations_are_ranked_in_the_order_given(sink):
+def test_recommendations_replace_their_slice_in_one_transaction(sink):
     ranked = pd.DataFrame({"ticker": ["B", "A", "C"], "gics_sector": ["X", "Y", None],
                            "pred": [0.9, 0.5, 0.1]})
     n = db.load_recommendations(ranked, "lightgbm-1m-1", pd.Timestamp("2026-10-31"))
-    df, key = sink["upserts"]["recommendations"]
-    assert n == 3 and key == ["as_of", "model_version", "ticker"]
+    (tx,) = sink["tx"]
+    (kind, delete, params), (_, table, df, key) = tx
+    # Only this (as_of, model_version) is cleared, then rewritten, in one commit.
+    assert "DELETE FROM recommendations WHERE as_of = :a AND model_version = :v" in delete
+    assert params == {"a": pd.Timestamp("2026-10-31").date(), "v": "lightgbm-1m-1"}
+    assert table == "recommendations" and key == ["as_of", "model_version", "ticker"]
+    assert n == 3 and sink["commits"] == 1
     assert df["ticker"].tolist() == ["B", "A", "C"] and df["rank"].tolist() == [1, 2, 3]
     assert (df["as_of"] == pd.Timestamp("2026-10-31").date()).all()
     assert df["scored_at"].iloc[0].tzinfo is not None
@@ -59,22 +85,24 @@ def _preds(n_dates=24, n_names=60):
     return pd.concat(rows, ignore_index=True)
 
 
-def test_backtest_summary_and_months_are_stored_with_their_parameters(sink):
+def test_backtest_summary_and_months_are_one_transaction(sink):
     res = run_strategy_backtest(_preds(), n_holdings=10, buffer_rank=10)
-    params = {"n_holdings": 10, "buffer_rank": 10, "cost_bps": 6.0, "min_price": 5.0}
+    params = {"n_holdings": 10, "buffer_rank": 10, "cost_bps": 6.0, "min_price": 5.0,
+              "max_position_weight": 0.08}
     n = db.load_strategy_backtest("v1", res, params)
 
-    (insert, row), (delete, _) = sink["sql"]
+    (tx,) = sink["tx"]
+    (_, insert, row), (_, delete, _), (_, table, df, key) = tx
+    assert sink["commits"] == 1
     assert "INSERT INTO strategy_backtest" in insert and "DELETE FROM strategy_returns" in delete
-    assert row["n"] == 10 and row["cost"] == 6.0 and row["months"] == len(res.returns)
+    assert row["n"] == 10 and row["cost"] == 6.0 and row["maxw"] == 0.08
+    assert row["months"] == len(res.returns)
     strategy = json.loads(row["s"])
     assert strategy["ann_return"] == pytest.approx(res.strategy["ann_return"])
     # No factors passed: the attribution is an error message, kept as text.
     assert json.loads(row["a"]) == {"error": "no factors supplied"}
-
-    df, key = sink["upserts"]["strategy_returns"]
-    assert n == len(res.returns) and key == ["model_version", "month"]
-    assert df["month"].tolist() == list(res.returns.index.date)
+    assert table == "strategy_returns" and key == ["model_version", "month"]
+    assert n == len(res.returns) and df["month"].tolist() == list(res.returns.index.date)
 
 
 def test_jsonable_drops_frames_and_nan():

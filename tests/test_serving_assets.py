@@ -61,12 +61,32 @@ def test_stored_ranking_is_the_dashboards(monkeypatch, model):
 
     # The dashboard's path (app/lib/data.py recommendations): the whole panel in.
     assert "latest_recommendations(horizon=horizon, panel=panel())" in DASHBOARD
-    ranked, man, asof = latest_recommendations(horizon="1m", panel=full)
+    dashboard_panel = full.sort_values(["date", "ticker"]).reset_index(drop=True)
+    ranked, man, asof = latest_recommendations(horizon="1m", panel=dashboard_panel)
     n = load_config("model")["portfolio"]["n_holdings"]
     assert seen["ranked"]["ticker"].tolist() == ranked["ticker"].tolist()
     assert seen["ranked"]["ticker"].head(n).tolist() == ranked["ticker"].head(n).tolist()
     assert np.allclose(seen["ranked"]["pred"], ranked["pred"])
     assert seen["v"] == man.model_version and seen["asof"] == asof == latest
+
+
+def test_tied_scores_are_ordered_as_the_dashboard_orders_them(monkeypatch, model):
+    # Identical feature rows score identically; the panel arrives in no order.
+    full = _panel(n_names=40)
+    full[["f0", "f1"]] = full[["f0", "f1"]].round(0)
+    full = full.sample(frac=1, random_state=3).reset_index(drop=True)
+    latest = full["date"].max()
+    seen = {}
+    monkeypatch.setattr(db, "read_sql", lambda sql, **p: full[full["date"] == latest]
+                        .assign(date=lambda d: d["date"].dt.date))
+    monkeypatch.setattr(db, "load_recommendations",
+                        lambda ranked, v, asof: seen.update(ranked=ranked) or len(ranked))
+    assets.recommendations(build_asset_context())
+
+    dashboard_panel = full.sort_values(["date", "ticker"]).reset_index(drop=True)
+    ranked, _, _ = latest_recommendations(horizon="1m", panel=dashboard_panel)
+    assert ranked["pred"].duplicated().any()          # the case under test
+    assert seen["ranked"]["ticker"].tolist() == ranked["ticker"].tolist()
 
 
 def _preds(n_dates=30, n_names=60):
@@ -104,4 +124,5 @@ def test_stored_backtest_is_the_dashboards_at_its_defaults(monkeypatch):
     assert seen["res"].attribution["alpha_annual"] == pytest.approx(dash.attribution["alpha_annual"])
     assert seen["params"]["n_holdings"] == n and seen["params"]["cost_bps"] == cost
     assert seen["params"]["buffer_rank"] == max(cfg["portfolio"]["buffer_rank"], n)
+    assert seen["params"]["max_position_weight"] == cfg["portfolio"]["max_position_weight"]
     assert seen["params"]["min_price"] == load_config("data")["universe"]["liquidity_filters"]["min_price"]
