@@ -256,8 +256,13 @@ def recommendations(context) -> None:
     from src.serving.recommend import latest_recommendations
 
     latest = db.read_sql(
-        "SELECT * FROM panel_monthly WHERE date = (SELECT max(date) FROM panel_monthly)")
+        "SELECT * FROM panel_monthly WHERE date = (SELECT max(date) FROM panel_monthly) "
+        "ORDER BY ticker")
     latest["date"] = pd.to_datetime(latest["date"])
+    # Ordered exactly as the dashboard's load_panel_monthly() orders the panel
+    # (a pandas sort, not the database's collation), so tied scores come out
+    # of the score sort in the same order.
+    latest = latest.sort_values(["date", "ticker"]).reset_index(drop=True)
     ranked, manifest, asof = latest_recommendations(horizon="1m", panel=latest)
     n = db.load_recommendations(ranked, manifest.model_version, asof)
     context.add_output_metadata({
@@ -284,6 +289,7 @@ def strategy_backtest(context) -> None:
         "buffer_rank": max(pcfg.get("buffer_rank", pcfg["n_holdings"]), pcfg["n_holdings"]),
         "cost_bps": costs["commission_bps"] + costs["spread_bps"],
         "min_price": load_config("data")["universe"]["liquidity_filters"]["min_price"],
+        "max_position_weight": pcfg["max_position_weight"],
     }
     n = db.load_strategy_backtest(version, res, params)
     meta = {"model_version": version, "months": n}

@@ -77,6 +77,20 @@ def upsert(df: pd.DataFrame, table: str, conflict: list[str], *, chunksize: int 
     """
     if df.empty:
         return 0
+    raw = get_engine().raw_connection()
+    try:
+        with raw.cursor() as cur:
+            n = _upsert_rows(cur, df, table, conflict, chunksize=chunksize)
+        raw.commit()
+    finally:
+        raw.close()
+    return n
+
+
+def _upsert_rows(cur, df: pd.DataFrame, table: str, conflict: list[str], *,
+                 chunksize: int = 10000) -> int:
+    """``upsert``'s INSERT ... ON CONFLICT on a cursor the caller holds, so it
+    can share a transaction with other statements (commit is the caller's)."""
     from psycopg2.extras import execute_values
 
     cols = list(df.columns)
@@ -92,15 +106,8 @@ def upsert(df: pd.DataFrame, table: str, conflict: list[str], *, chunksize: int 
 
     # NaN/NaT -> None for SQL NULL; rows as plain tuples.
     records = to_records(df)
-
-    raw = get_engine().raw_connection()
-    try:
-        with raw.cursor() as cur:
-            for i in range(0, len(records), chunksize):
-                execute_values(cur, sql, records[i : i + chunksize], page_size=1000)
-        raw.commit()
-    finally:
-        raw.close()
+    for i in range(0, len(records), chunksize):
+        execute_values(cur, sql, records[i : i + chunksize], page_size=1000)
     return len(records)
 
 
@@ -550,6 +557,7 @@ CREATE TABLE IF NOT EXISTS strategy_backtest (
     buffer_rank    integer NOT NULL,
     cost_bps       double precision NOT NULL,   -- per side: commission + half-spread
     min_price      double precision,            -- the live buy floor (rebalancing)
+    max_position_weight double precision,       -- the per-name weight cap
     first_month    date,
     last_month     date,
     n_months       integer,
@@ -558,6 +566,7 @@ CREATE TABLE IF NOT EXISTS strategy_backtest (
     benchmark      jsonb NOT NULL,   -- performance_summary of the equal-weight universe
     attribution    jsonb NOT NULL    -- FF5+MOM alpha/betas/t-stats/R², or {"error": ...}
 );
+ALTER TABLE strategy_backtest ADD COLUMN IF NOT EXISTS max_position_weight double precision;
 CREATE TABLE IF NOT EXISTS strategy_returns (
     model_version  text NOT NULL,
     month          date NOT NULL,     -- REALIZATION month-end
@@ -597,7 +606,19 @@ def load_recommendations(ranked: pd.DataFrame, model_version: str,
         "scored_at": pd.Timestamp.now(tz="UTC"),
     })
     ensure_serving_tables()
-    return upsert(df, "recommendations", ["as_of", "model_version", "ticker"])
+    from sqlalchemy import text
+
+    # Replace the whole (as_of, model_version) ranking in one transaction: a
+    # rebuilt cross-section must not leave the names it dropped behind with
+    # their old ranks, and a reader must never see half of either.
+    with get_engine().begin() as conn:
+        conn.execute(
+            text("DELETE FROM recommendations WHERE as_of = :a AND model_version = :v"),
+            {"a": pd.Timestamp(asof).date(), "v": model_version},
+        )
+        with conn.connection.cursor() as cur:
+            return _upsert_rows(cur, df, "recommendations",
+                                ["as_of", "model_version", "ticker"])
 
 
 def _jsonable(d: dict) -> dict:
@@ -619,7 +640,8 @@ def _jsonable(d: dict) -> dict:
 
 def load_strategy_backtest(model_version: str, result, params: dict) -> int:
     """Persist a ``BacktestResult`` for one model: the summary row (with the
-    parameters it ran at) -> strategy_backtest, monthly rows -> strategy_returns."""
+    parameters it ran at) -> strategy_backtest, monthly rows -> strategy_returns.
+    All in one transaction, so a reader never sees a summary without its months."""
     import json
 
     from sqlalchemy import text
@@ -630,6 +652,7 @@ def load_strategy_backtest(model_version: str, result, params: dict) -> int:
         "v": model_version,
         "n": int(params["n_holdings"]), "buf": int(params["buffer_rank"]),
         "cost": float(params["cost_bps"]), "minp": params.get("min_price"),
+        "maxw": params.get("max_position_weight"),
         "first": bt.index.min().date() if len(bt) else None,
         "last": bt.index.max().date() if len(bt) else None,
         "months": int(len(bt)),
@@ -638,17 +661,21 @@ def load_strategy_backtest(model_version: str, result, params: dict) -> int:
         "b": json.dumps(_jsonable(result.benchmark)),
         "a": json.dumps(_jsonable(result.attribution)),
     }
+    monthly = bt[["gross", "cost", "net", "benchmark", "turnover"]].copy()
+    monthly.insert(0, "month", pd.to_datetime(bt.index).date)
+    monthly.insert(0, "model_version", model_version)
     with get_engine().begin() as conn:
         conn.execute(
             text(
                 "INSERT INTO strategy_backtest (model_version, computed_at, n_holdings, "
-                "buffer_rank, cost_bps, min_price, first_month, last_month, n_months, "
-                "avg_turnover, strategy, benchmark, attribution) VALUES (:v, now(), :n, "
-                ":buf, :cost, :minp, :first, :last, :months, :tov, CAST(:s AS jsonb), "
-                "CAST(:b AS jsonb), CAST(:a AS jsonb)) "
+                "buffer_rank, cost_bps, min_price, max_position_weight, first_month, "
+                "last_month, n_months, avg_turnover, strategy, benchmark, attribution) "
+                "VALUES (:v, now(), :n, :buf, :cost, :minp, :maxw, :first, :last, :months, "
+                ":tov, CAST(:s AS jsonb), CAST(:b AS jsonb), CAST(:a AS jsonb)) "
                 "ON CONFLICT (model_version) DO UPDATE SET computed_at = now(), "
                 "n_holdings = EXCLUDED.n_holdings, buffer_rank = EXCLUDED.buffer_rank, "
                 "cost_bps = EXCLUDED.cost_bps, min_price = EXCLUDED.min_price, "
+                "max_position_weight = EXCLUDED.max_position_weight, "
                 "first_month = EXCLUDED.first_month, last_month = EXCLUDED.last_month, "
                 "n_months = EXCLUDED.n_months, avg_turnover = EXCLUDED.avg_turnover, "
                 "strategy = EXCLUDED.strategy, benchmark = EXCLUDED.benchmark, "
@@ -658,10 +685,8 @@ def load_strategy_backtest(model_version: str, result, params: dict) -> int:
         )
         conn.execute(text("DELETE FROM strategy_returns WHERE model_version = :v"),
                      {"v": model_version})
-    if bt.empty:
-        return 0
-    monthly = bt[["gross", "cost", "net", "benchmark", "turnover"]].copy()
-    monthly.insert(0, "month", pd.to_datetime(bt.index).date)
-    monthly.insert(0, "model_version", model_version)
-    return upsert(monthly.reset_index(drop=True), "strategy_returns",
-                  ["model_version", "month"])
+        if monthly.empty:
+            return 0
+        with conn.connection.cursor() as cur:
+            return _upsert_rows(cur, monthly.reset_index(drop=True), "strategy_returns",
+                                ["model_version", "month"])
