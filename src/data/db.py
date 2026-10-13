@@ -448,13 +448,35 @@ CREATE INDEX IF NOT EXISTS idx_model_registry_horizon
 """
 
 
+# home-agent's read-only role (scripts/create_reader.sh) may read everything
+# here but the serialized model. Its default privileges grant SELECT on every
+# new table, so a (re)created model_registry would hand it ``artifact`` too;
+# re-apply the column grant every time the table is ensured. The script also
+# installs an event trigger doing the same on any CREATE TABLE of it, for code
+# paths that create the table without coming through here.
+READER_ROLE = "home_agent_reader"
+READER_REGISTRY_COLUMNS = ("model_version", "horizon", "model_name", "manifest", "created_at")
+_READER_COLS = ", ".join(READER_REGISTRY_COLUMNS)
+_REGISTRY_READER_GRANT = f"""
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{READER_ROLE}') THEN
+    REVOKE SELECT ON model_registry FROM {READER_ROLE};
+    GRANT SELECT ({_READER_COLS}) ON model_registry TO {READER_ROLE};
+  END IF;
+END $$
+"""
+
+
 def ensure_model_registry_table() -> None:
-    """Create the ``model_registry`` table + index if absent."""
+    """Create the ``model_registry`` table + index if absent, and keep the
+    read-only reader off its ``artifact`` column."""
     from sqlalchemy import text
 
     with get_engine().begin() as conn:
         for stmt in filter(str.strip, _MODEL_REGISTRY_DDL.split(";")):
             conn.execute(text(stmt))
+        conn.execute(text(_REGISTRY_READER_GRANT))
 
 
 def save_model_registry(manifest: dict, artifact: bytes) -> None:
